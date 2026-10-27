@@ -30,6 +30,12 @@ namespace share
 {
 const ObString ObAiModelEndpointInfo::DEFAULT_SCOPE = "ALL";
 
+// Providers that do not authenticate requests.  Only these providers may be
+// configured without an access key; every other provider still requires one.
+const char *ACCESS_KEY_OPTIONAL_PROVIDERS[] = {
+  "OLLAMA"
+};
+
 const char *VALID_PROVIDERS[] = {
   "ALIYUN-OPENAI",
   "ALIYUN-DASHSCOPE",
@@ -37,7 +43,8 @@ const char *VALID_PROVIDERS[] = {
   "SILICONFLOW",
   "COHERE",
   "HUNYUAN-OPENAI",
-  "OPENAI"
+  "OPENAI",
+  "OLLAMA"
 };
 
 #define EXTRACT_JSON_ELEM_STR(json_key, member) \
@@ -112,7 +119,7 @@ int ObAiModelEndpointInfo::check_valid() const
   } else if (url_.empty()) {
     ret = OB_AI_FUNC_PARAM_EMPTY;
     LOG_USER_ERROR(OB_AI_FUNC_PARAM_EMPTY, strlen("url"), "url");
-  } else if (access_key_.empty()) {
+  } else if (access_key_.empty() && !is_access_key_optional_provider(provider_)) {
     ret = OB_AI_FUNC_PARAM_EMPTY;
     LOG_USER_ERROR(OB_AI_FUNC_PARAM_EMPTY, strlen("access_key"), "access_key");
     LOG_WARN("access_key is empty", K(ret), K(*this));
@@ -122,9 +129,6 @@ int ObAiModelEndpointInfo::check_valid() const
   } else if (!is_valid_provider(provider_)) {
     ret = OB_AI_FUNC_PARAM_VALUE_INVALID;
     LOG_USER_ERROR(OB_AI_FUNC_PARAM_VALUE_INVALID, strlen("provider"), "provider");
-  } else if (!parameters_.empty()) {
-    ret = OB_AI_FUNC_PARAM_VALUE_INVALID;
-    LOG_USER_ERROR(OB_AI_FUNC_PARAM_VALUE_INVALID, strlen("parameters"), "parameters");
   } else if (!request_transform_fn_.empty()) {
     ret = OB_AI_FUNC_PARAM_VALUE_INVALID;
     LOG_USER_ERROR(OB_AI_FUNC_PARAM_VALUE_INVALID, strlen("request_transform_fn"), "request_transform_fn");
@@ -145,6 +149,17 @@ bool ObAiModelEndpointInfo::is_valid_provider(const ObString &provider)
     }
   }
   return is_valid;
+}
+
+bool ObAiModelEndpointInfo::is_access_key_optional_provider(const ObString &provider)
+{
+  bool optional = false;
+  for (int64_t i = 0; !optional && i < ARRAYSIZEOF(ACCESS_KEY_OPTIONAL_PROVIDERS); ++i) {
+    if (provider.case_compare(ACCESS_KEY_OPTIONAL_PROVIDERS[i]) == 0) {
+      optional = true;
+    }
+  }
+  return optional;
 }
 
 int ObAiModelEndpointInfo::merge_delta_endpoint(common::ObArenaAllocator &allocator, const ObIJsonBase &delta_jbase)
