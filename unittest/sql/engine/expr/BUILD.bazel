@@ -9,7 +9,7 @@ cc_library(
     alwayslink = True,
     deps = [
         "//bazel/third_party:gtest",
-        "//src/sql:sql_runtime_interface",
+        "//src/sql:sql_ai_test_headers",
     ],
 )
 
@@ -31,7 +31,7 @@ cc_library(
     alwayslink = True,
     deps = [
         "//bazel/third_party:gtest",
-        "//src/sql:sql_runtime_interface",
+        "//src/sql:sql_ai_test_headers",
     ],
 )
 

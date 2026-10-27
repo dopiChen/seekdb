@@ -219,3 +219,9 @@ TEST_F(TestObOpenAIUtils, ollama_embedding_body_carries_every_input)
 
 } // namespace sql
 } // namespace oceanbase
+
+int main(int argc, char **argv)
+{
+  ::testing::InitGoogleTest(&argc, argv);
+  return RUN_ALL_TESTS();
+}

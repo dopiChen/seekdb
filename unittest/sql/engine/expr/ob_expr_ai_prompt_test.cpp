@@ -215,3 +215,9 @@ TEST_F(TestObExprAIPrompt, endpoint_params_ignore_unknown_member)
 
 } // namespace sql
 } // namespace oceanbase
+
+int main(int argc, char **argv)
+{
+  ::testing::InitGoogleTest(&argc, argv);
+  return RUN_ALL_TESTS();
+}
