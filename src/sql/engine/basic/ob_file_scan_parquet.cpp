@@ -622,9 +622,12 @@ int parse_column_meta(CompactReader &cr, ColumnMetaData &m)
         case 5: ret = cr.read_i64(m.num_values_); break;
         case 6: ret = cr.read_i64(m.total_uncompressed_size_); break;
         case 7: ret = cr.read_i64(m.total_compressed_size_); break;
-        case 8: ret = cr.read_i64(m.data_page_offset_); break;
-        case 9: ret = cr.read_i64(m.index_page_offset_); break;
-        case 10: ret = cr.read_i64(m.dictionary_page_offset_); break;
+        // ColumnMetaData field 8 is key_value_metadata.  The page offsets are
+        // fields 9/10/11 in parquet.thrift (the previous numbering made every
+        // column read from offset zero).
+        case 9: ret = cr.read_i64(m.data_page_offset_); break;
+        case 10: ret = cr.read_i64(m.index_page_offset_); break;
+        case 11: ret = cr.read_i64(m.dictionary_page_offset_); break;
         default: ret = cr.skip(type); break;
       }
     }
@@ -1623,6 +1626,34 @@ int ParquetFileReader::decode_column(const ColumnMetaData &meta, int64_t leaf_id
                         } else {
                           decoded.push_back(dict_values[indices[static_cast<size_t>(i)]]);
                         }
+                      }
+                    }
+                  } else if (PE_RLE == encoding && PT_BOOLEAN == leaf.physical_type_) {
+                    // BOOLEAN values may use the RLE/bit-packed hybrid.
+                    // The hybrid stream is prefixed by its 32-bit byte length
+                    // in both DataPageV1 and DataPageV2.
+                    uint32_t encoded_len = 0;
+                    const uint8_t *rle_data = NULL;
+                    size_t rle_len = 0;
+                    if (FS_OK != (ret = br.read_le32(encoded_len)) ||
+                        encoded_len > br.remain()) {
+                      ret = FS_ERR_BAD_DATA;
+                    } else {
+                      rle_data = br.cur();
+                      rle_len = encoded_len;
+                    }
+                    std::vector<uint32_t> bool_values;
+                    if (FS_OK == ret &&
+                        FS_OK != (ret = rle_decode(rle_data, rle_len, 1, value_cnt,
+                                                   bool_values))) {
+                    }
+                    for (int64_t i = 0; FS_OK == ret && i < value_cnt; ++i) {
+                      FileCell cell;
+                      ret = convert_value(leaf.physical_type_, leaf.converted_type_,
+                                          leaf.scale_, bool_values[static_cast<size_t>(i)],
+                                          0, 0.0, std::string(), cell, err);
+                      if (FS_OK == ret) {
+                        decoded.push_back(cell);
                       }
                     }
                   } else if (PE_PLAIN == encoding) {

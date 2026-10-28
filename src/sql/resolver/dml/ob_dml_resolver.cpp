@@ -11270,7 +11270,7 @@ int get_file_table_literal_bool(const ParseNode *node,
   value = false;
   if (OB_ISNULL(node)) {
     ret = OB_ERR_UNEXPECTED;
-  } else if (T_INT == node->type_) {
+  } else if (T_BOOL == node->type_ || T_INT == node->type_) {
     value = (0 != node->value_);
   } else if (T_QUESTIONMARK == node->type_) {
     int64_t param_idx = static_cast<int64_t>(node->value_);
@@ -11417,7 +11417,11 @@ int ObDMLResolver::resolve_file_table_item(const ParseNode &table_node, TableIte
   } else if (OB_UNLIKELY(!enable_file_sql)) {
     ret = OB_NOT_SUPPORTED;
     LOG_USER_ERROR(OB_NOT_SUPPORTED, "file table is disabled, please set enable_file_sql = true first");
-  } else if (OB_FAIL(session_info_->get_sys_variable(share::SYS_VAR_SECURE_FILE_PRIV, secure_file_priv))) {
+  } else if (OB_FAIL(ObSchemaUtils::get_runtime_varchar_variable(*GCTX.schema_service_,
+                                                                share::SYS_VAR_SECURE_FILE_PRIV,
+                                                                *allocator_,
+                                                                secure_file_priv))) {
+    LOG_WARN("failed to get secure_file_priv", K(ret));
   }
   if (OB_FAIL(ret)) {
   } else if (OB_ISNULL(table_node.children_[0])) {

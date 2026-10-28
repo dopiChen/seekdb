@@ -1,0 +1,6 @@
+id,name,score,dept,birth,active,note
+1,"Alice, A",90.5,eng,2020-01-02,true,hello
+2,Bob,,sales,2021-03-04,false,"line1
+line2"
+3,"张 三",77.25,eng,2019-12-31,true,"quote ""ok"""
+4,Dave,88,hr,,0,

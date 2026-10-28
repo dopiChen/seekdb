@@ -1,0 +1,26 @@
+load("@rules_cc//cc:cc_test.bzl", "cc_test")
+load("//bazel:defs.bzl", "CXX_COPTS")
+
+package(default_testonly = True)
+
+cc_test(
+    name = "test_file_sql_parser",
+    srcs = ["test_file_sql_parser.cpp"],
+    copts = CXX_COPTS,
+    data = ["//:libaio_shared"],
+    env = {"LD_LIBRARY_PATH": "deps/3rd/usr/local/oceanbase/deps/devel/lib"},
+    features = ["-static_cpp_runtime", "-static_link_cpp_runtimes"],
+    linkopts = ["-Wl,--no-as-needed"],
+    linkstatic = True,
+    deps = [
+        "//bazel/third_party:gtest",
+        "//src/observer:liboceanbase",
+        "//src/sql:sql_unit_test_headers",
+        "//bazel/third_party:libaio",
+        "//bazel/third_party:libcrypto",
+        "//bazel/third_party:libssl",
+        "//bazel/third_party:libunwind",
+        "//bazel/third_party:zlib",
+    ],
+    target_compatible_with = ["@platforms//os:linux"],
+)

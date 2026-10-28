@@ -6823,6 +6823,16 @@ int ObLogPlan::allocate_select_into_as_top(ObLogicalOperator *&old_top)
       ret = OB_ERR_UNEXPECTED;
     } else if (OB_FAIL(stmt->get_select_exprs(select_exprs))) {
     } else if (OB_FAIL(select_into->get_select_exprs().assign(select_exprs))) {
+    } else {
+      for (int64_t i = 0; OB_SUCC(ret) && i < stmt->get_select_item_size(); ++i) {
+        const SelectItem &item = stmt->get_select_item(i);
+        ObString name = item.alias_name_;
+        if (name.empty()) {
+          name = item.expr_name_;
+        }
+        if (OB_FAIL(select_into->get_header_names().push_back(name))) {
+        }
+      }
     }
     if (OB_SUCC(ret)) {
       select_into->set_into_type(into_item->into_type_);
@@ -6838,6 +6848,7 @@ int ObLogPlan::allocate_select_into_as_top(ObLogicalOperator *&old_top)
       select_into->set_escaped_cht(into_item->escaped_cht_);
       select_into->set_cs_type(into_item->cs_type_);
       select_into->set_external_properties(into_item->external_properties_);
+      select_into->set_is_copy(into_item->is_copy_);
       select_into->set_child(ObLogicalOperator::first_child, old_top);
       // compute property
       if (OB_FAIL(select_into->compute_property())) {

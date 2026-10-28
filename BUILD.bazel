@@ -9,3 +9,10 @@ alias(
     }),
     visibility = ["//visibility:public"],
 )
+
+# Shared libaio SONAME needed at runtime by liboceanbase in unit tests.
+filegroup(
+    name = "libaio_shared",
+    srcs = ["deps/3rd/usr/local/oceanbase/deps/devel/lib/libaio.so.1"],
+    visibility = ["//unittest:__subpackages__"],
+)

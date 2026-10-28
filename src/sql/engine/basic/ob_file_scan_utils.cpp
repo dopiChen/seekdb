@@ -15,6 +15,7 @@
  */
 
 #include "sql/engine/basic/ob_file_scan_utils.h"
+#include "lib/ob_errno.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -621,6 +622,7 @@ private:
   int read_char(char &c, bool &eof);
   int read_record(std::vector<Field> &fields, bool &eof, std::string &err);
   int build_schema(std::string &err);
+  bool is_null_field(const Field &field) const;
   int cell_from_field(const Field &field, FileColumnType type, FileCell &cell, std::string &err);
   FileReadOptions options_;
   FILE *fp_ = NULL;
@@ -876,7 +878,8 @@ int CsvFileReader::build_schema(std::string &err)
     }
     for (size_t i = 0; FS_OK == ret && i < fields.size(); ++i) {
       int64_t len = column_lengths_[i];
-      const FileColumnType type = infer_text_type(fields[i].text_, len);
+      const bool is_null = is_null_field(fields[i]);
+      const FileColumnType type = is_null ? FT_NULL : infer_text_type(fields[i].text_, len);
       column_lengths_[i] = len;
       column_types_[i] = merge_column_type(column_types_[i], type);
     }
@@ -895,7 +898,8 @@ int CsvFileReader::build_schema(std::string &err)
     } else {
       for (size_t i = 0; FS_OK == ret && i < fields.size(); ++i) {
         int64_t len = column_lengths_[i];
-        const FileColumnType type = infer_text_type(fields[i].text_, len);
+        const bool is_null = is_null_field(fields[i]);
+        const FileColumnType type = is_null ? FT_NULL : infer_text_type(fields[i].text_, len);
         column_lengths_[i] = len;
         column_types_[i] = merge_column_type(column_types_[i], type);
       }
@@ -943,13 +947,20 @@ int CsvFileReader::open(std::string &err)
   return ret;
 }
 
+bool CsvFileReader::is_null_field(const Field &field) const
+{
+  // Unquoted empty fields are NULL (a quoted empty field is an empty string).
+  // An explicit null string additionally marks matching unquoted values.
+  return !field.quoted_ &&
+         (field.text_.empty() ||
+          (options_.null_str_set_ && field.text_ == options_.null_str_));
+}
+
 int CsvFileReader::cell_from_field(const Field &field, FileColumnType type,
                                    FileCell &cell, std::string &err)
 {
   int ret = FS_OK;
-  const bool is_null = !field.quoted_ &&
-                       ((options_.null_str_set_ && field.text_ == options_.null_str_) ||
-                        (!options_.null_str_set_ && field.text_.empty()));
+  const bool is_null = is_null_field(field);
   if (is_null) {
     cell.reset();
   } else if (FS_OK != (ret = parse_text_to_cell(field.text_, type, cell))) {
