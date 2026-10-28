@@ -6,5 +6,6 @@ exec $FILE_SQL_RM;
 
 SET SESSION enable_file_sql = false;
 SET GLOBAL enable_file_sql = false;
-SET GLOBAL secure_file_priv = '';
+# 恢复默认值（'/'），否则空串会让后续用例的所有 direct path 访问被拒绝
+SET GLOBAL secure_file_priv = '/';
 DROP DATABASE IF EXISTS file_sql_test;

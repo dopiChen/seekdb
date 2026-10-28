@@ -225,5 +225,5 @@ COUNT(*)
 2
 SET SESSION enable_file_sql = false;
 SET GLOBAL enable_file_sql = false;
-SET GLOBAL secure_file_priv = '';
+SET GLOBAL secure_file_priv = '/';
 DROP DATABASE IF EXISTS file_sql_test;
