@@ -11105,6 +11105,24 @@ void flatten_file_table_args(const ParseNode *node, std::vector<const ParseNode 
   }
 }
 
+// DuckDB style file readers accept an optional second positional argument that
+// names the file format. Only the format matching the called function is valid.
+bool is_supported_positional_format(const std::string &requested, const std::string &reader_format)
+{
+  bool supported = false;
+  if ("csv" == reader_format) {
+    supported = ("csv" == requested);
+  } else if ("jsonl" == reader_format) {
+    supported = ("jsonl" == requested || "json" == requested ||
+                 "ndjson" == requested || "newline_delimited" == requested);
+  } else if ("parquet" == reader_format) {
+    supported = ("parquet" == requested);
+  } else if ("glob" == reader_format) {
+    supported = ("glob" == requested);
+  }
+  return supported;
+}
+
 // Flatten the left recursive T_EXPR_LIST of a relation_name_list, which is used
 // as the column alias list of a file table (`read_csv(...) t(a, b, c)`).
 void flatten_file_table_column_aliases(const ParseNode *node,
@@ -11480,6 +11498,18 @@ int ObDMLResolver::resolve_file_table_item(const ParseNode &table_node, TableIte
           } else {
             options.null_str_set_ = true;
           }
+        } else if ("format" == name) {
+          std::string format_text;
+          if (OB_FAIL(get_file_table_literal_text(value_node, params_.param_list_, format_text))) {
+          } else {
+            std::transform(format_text.begin(), format_text.end(),
+                           format_text.begin(), ::tolower);
+            if (!is_supported_positional_format(format_text, options.format_)) {
+              ret = OB_ERR_PARSE_SQL;
+              LOG_WARN("unsupported file table format", K(format_text.c_str()),
+                       K(options.format_.c_str()), K(ret));
+            }
+          }
         } else if ("sample_size" == name) {
           if (OB_FAIL(get_file_table_literal_int(value_node, params_.param_list_, sample_size))) {
           } else if (OB_UNLIKELY(-1 != sample_size)) {
@@ -11500,8 +11530,18 @@ int ObDMLResolver::resolve_file_table_item(const ParseNode &table_node, TableIte
         has_path = true;
       }
     } else {
-      ret = OB_NOT_SUPPORTED;
-      LOG_WARN("file table only accepts one positional argument", K(ret));
+      // DuckDB allows the format as the second positional argument, e.g.
+      // read_csv('f.csv', 'csv') or read_json('f.jsonl', 'newline_delimited').
+      std::string format_text;
+      if (OB_FAIL(get_file_table_literal_text(arg, params_.param_list_, format_text))) {
+      } else {
+        std::transform(format_text.begin(), format_text.end(), format_text.begin(), ::tolower);
+        if (!is_supported_positional_format(format_text, options.format_)) {
+          ret = OB_ERR_PARSE_SQL;
+          LOG_WARN("invalid file table format argument", K(format_text.c_str()),
+                   K(options.format_.c_str()), K(ret));
+        }
+      }
     }
   }
   UNUSED(sample_size_set);
@@ -11631,6 +11671,7 @@ int ObDMLResolver::resolve_file_table_item(const ParseNode &table_node, TableIte
       }
       col_def.type_ = static_cast<int32_t>(schema.at(i).type_);
       col_def.varchar_length_ = schema.at(i).varchar_length_;
+      col_def.scale_ = schema.at(i).scale_;
       col_def.nullable_ = schema.at(i).nullable_;
       if (OB_FAIL(ob_write_string(*allocator_, ObString(col_name.c_str()), col_def.column_name_))) {
       } else if (OB_FAIL(table_def->columns_.push_back(col_def))) {
@@ -11708,6 +11749,9 @@ int ObDMLResolver::gen_file_table_column_items(TableItem &table_item)
         case static_cast<int32_t>(file_sql::FT_DATETIME):
           obj_type = ObDateTimeType;
           accuracy = ObAccuracy::DDL_DEFAULT_ACCURACY2[0][ObDateTimeType];
+          if (col_def.scale_ >= 0) {
+            accuracy.set_scale(static_cast<ObScale>(col_def.scale_));
+          }
           break;
         case static_cast<int32_t>(file_sql::FT_VARCHAR): {
           obj_type = ObVarcharType;

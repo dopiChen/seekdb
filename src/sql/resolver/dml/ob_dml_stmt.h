@@ -137,13 +137,14 @@ struct ObValuesTableDef {
 struct ObFileColumnDef
 {
   ObFileColumnDef()
-    : column_name_(), type_(0), varchar_length_(0), nullable_(true) {}
+    : column_name_(), type_(0), varchar_length_(0), scale_(-1), nullable_(true) {}
   common::ObString column_name_;
   int32_t type_;
   int64_t varchar_length_;
+  int64_t scale_;
   bool nullable_;
   int deep_copy(const ObFileColumnDef &other, ObIAllocator *allocator);
-  TO_STRING_KV(K_(column_name), K_(type), K_(varchar_length), K_(nullable));
+  TO_STRING_KV(K_(column_name), K_(type), K_(varchar_length), K_(scale), K_(nullable));
 };
 
 enum ObFileTableFormat

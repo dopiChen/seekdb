@@ -79,6 +79,8 @@ struct FileColumnSchema
   std::string name_;
   FileColumnType type_ = FT_NULL;
   int64_t varchar_length_ = 0;
+  // fractional-seconds scale for DATE/DATETIME columns, -1 means use the default
+  int64_t scale_ = -1;
   bool nullable_ = true;
   // parquet physical description, only used by the parquet reader
   int32_t parquet_type_ = -1;

@@ -45,34 +45,29 @@ void append_sql_escaped(std::string &out, const std::string &in)
 
 void append_file_column_type(std::string &out, int32_t type, int64_t varchar_length)
 {
-  char buf[64];
+  (void)varchar_length;
   switch (type) {
     case static_cast<int32_t>(file_sql::FT_BOOLEAN):
-      out.append("tinyint(1)");
+      out.append("BOOLEAN");
       break;
     case static_cast<int32_t>(file_sql::FT_BIGINT):
-      out.append("bigint");
+      out.append("BIGINT");
       break;
     case static_cast<int32_t>(file_sql::FT_DOUBLE):
-      out.append("double");
+      out.append("DOUBLE");
       break;
     case static_cast<int32_t>(file_sql::FT_DATE):
-      out.append("date");
+      out.append("DATE");
       break;
     case static_cast<int32_t>(file_sql::FT_DATETIME):
-      out.append("datetime");
+      out.append("DATETIME");
       break;
     case static_cast<int32_t>(file_sql::FT_VARCHAR):
-      if (varchar_length > 0) {
-        snprintf(buf, sizeof(buf), "varchar(%ld)", static_cast<long>(varchar_length));
-        out.append(buf);
-      } else {
-        out.append("varchar");
-      }
+      out.append("VARCHAR");
       break;
     case static_cast<int32_t>(file_sql::FT_NULL):
     default:
-      out.append("null");
+      out.append("NULL");
       break;
   }
 }
@@ -121,11 +116,12 @@ int ObExplainResolver::build_file_table_describe_stmt(ObStmt &child_stmt, ObStmt
         }
         sql.append("SELECT CAST('");
         append_sql_escaped(sql, col_name);
-        sql.append("' AS CHAR(256)) AS Field, CAST('");
+        sql.append("' AS CHAR(256)) AS column_name, CAST('");
         append_sql_escaped(sql, type_str);
-        sql.append("' AS CHAR(64)) AS Type, CAST('");
+        sql.append("' AS CHAR(64)) AS column_type, CAST('");
         sql.append(col_def.nullable_ ? "YES" : "NO");
-        sql.append("' AS CHAR(3)) AS `Null`");
+        sql.append("' AS CHAR(3)) AS `null`, CAST(NULL AS CHAR(4)) AS `key`, "
+                   "CAST(NULL AS CHAR(8)) AS `default`, CAST(NULL AS CHAR(4)) AS extra");
       }
       if (OB_SUCC(ret)) {
         ParseResult parse_result;

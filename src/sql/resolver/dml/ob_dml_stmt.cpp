@@ -146,6 +146,7 @@ int ObFileColumnDef::deep_copy(const ObFileColumnDef &other, ObIAllocator *alloc
   } else {
     type_ = other.type_;
     varchar_length_ = other.varchar_length_;
+    scale_ = other.scale_;
     nullable_ = other.nullable_;
   }
   return ret;

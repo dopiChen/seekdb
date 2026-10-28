@@ -29,6 +29,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <map>
 #include <memory>
 #include <new>
 #include <utility>
@@ -364,6 +365,21 @@ std::string format_datetime_us(int64_t us)
   return std::string(buf);
 }
 
+// Number of fractional-second digits in a datetime literal (capped at 6).
+int64_t datetime_fraction_digits(const std::string &text)
+{
+  int64_t digits = 0;
+  if (text.size() > 19) {
+    const size_t dot = text.find('.', 19);
+    if (std::string::npos != dot) {
+      for (size_t i = dot + 1; i < text.size() && text[i] >= '0' && text[i] <= '9'; ++i) {
+        ++digits;
+      }
+    }
+  }
+  return std::min<int64_t>(digits, 6);
+}
+
 FileColumnType infer_text_type(const std::string &text, int64_t &varchar_length)
 {
   FileColumnType type = FT_VARCHAR;
@@ -634,6 +650,8 @@ private:
   std::vector<std::string> column_names_;
   std::vector<FileColumnType> column_types_;
   std::vector<int64_t> column_lengths_;
+  std::vector<bool> column_nullable_;
+  std::vector<int64_t> column_scales_;
 };
 
 int CsvFileReader::open_file(std::string &err)
@@ -846,28 +864,42 @@ int CsvFileReader::build_schema(std::string &err)
     }
   }
   const size_t column_cnt = column_names_.size();
-  // de-duplicate column names
-  for (size_t i = 0; i < column_cnt; ++i) {
-    const std::string base_name = column_names_[i];
-    int suffix = 1;
-    bool duplicated = true;
-    while (duplicated) {
-      duplicated = false;
-      for (size_t j = 0; j < i; ++j) {
-        if (column_names_[j] == column_names_[i]) {
-          duplicated = true;
-          break;
+  // De-duplicate column names the same way DuckDB does: the second occurrence of
+  // a header named `x` becomes `x__2`, the third `x__3`, and so on.
+  if (column_cnt > 0) {
+    const std::vector<std::string> base_names = column_names_;
+    std::map<std::string, int64_t> name_occurrence;
+    for (size_t i = 0; i < column_cnt; ++i) {
+      const std::string &base_name = base_names[i];
+      const int64_t occurrence = ++name_occurrence[base_name];
+      if (occurrence < 2) {
+        continue;
+      }
+      int64_t suffix = occurrence;
+      bool conflict = true;
+      std::string candidate;
+      while (conflict) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "__%lld", static_cast<long long>(suffix));
+        candidate = base_name + buf;
+        conflict = false;
+        for (size_t j = 0; j < i; ++j) {
+          if (column_names_[j] == candidate) {
+            conflict = true;
+            break;
+          }
+        }
+        if (conflict) {
+          ++suffix;
         }
       }
-      if (duplicated) {
-        char buf[64];
-        snprintf(buf, sizeof(buf), "_%d", ++suffix);
-        column_names_[i] = base_name + buf;
-      }
+      column_names_[i] = candidate;
     }
   }
   column_types_.assign(column_cnt, FT_NULL);
   column_lengths_.assign(column_cnt, 0);
+  column_nullable_.assign(column_cnt, false);
+  column_scales_.assign(column_cnt, 0);
   int64_t row_cnt = 0;
   if (FS_OK == ret && !options_.has_header_) {
     // the first record was consumed for column names, feed it into inference
@@ -882,6 +914,12 @@ int CsvFileReader::build_schema(std::string &err)
       const FileColumnType type = is_null ? FT_NULL : infer_text_type(fields[i].text_, len);
       column_lengths_[i] = len;
       column_types_[i] = merge_column_type(column_types_[i], type);
+      if (FT_DATETIME == type) {
+        column_scales_[i] = std::max(column_scales_[i], datetime_fraction_digits(fields[i].text_));
+      }
+      if (is_null) {
+        column_nullable_[i] = true;
+      }
     }
     ++row_cnt;
   }
@@ -902,6 +940,12 @@ int CsvFileReader::build_schema(std::string &err)
         const FileColumnType type = is_null ? FT_NULL : infer_text_type(fields[i].text_, len);
         column_lengths_[i] = len;
         column_types_[i] = merge_column_type(column_types_[i], type);
+        if (FT_DATETIME == type) {
+          column_scales_[i] = std::max(column_scales_[i], datetime_fraction_digits(fields[i].text_));
+        }
+        if (is_null) {
+          column_nullable_[i] = true;
+        }
       }
       ++row_cnt;
     }
@@ -922,7 +966,8 @@ int CsvFileReader::infer_schema(std::vector<FileColumnSchema> &schema, std::stri
       col.name_ = column_names_[i];
       col.type_ = column_types_[i];
       col.varchar_length_ = column_types_[i] == FT_VARCHAR ? column_lengths_[i] : 0;
-      col.nullable_ = true;
+      col.nullable_ = (i < column_nullable_.size()) ? column_nullable_[i] : true;
+      col.scale_ = (FT_DATETIME == col.type_ && i < column_scales_.size()) ? column_scales_[i] : -1;
       schema.push_back(col);
     }
     schema_ready_ = true;
@@ -1445,10 +1490,9 @@ int JsonlFileReader::build_schema(std::string &err)
             case JsonValue::J_INT: type = FT_BIGINT; break;
             case JsonValue::J_DOUBLE: type = FT_DOUBLE; break;
             case JsonValue::J_STRING:
-              type = FT_VARCHAR;
-              if (static_cast<int64_t>(child.str_val_.size()) > len) {
-                len = static_cast<int64_t>(child.str_val_.size());
-              }
+              // infer primitive types (DATE/DATETIME/BIGINT/DOUBLE/BOOLEAN) from
+              // string values so that JSONL scans match DuckDB semantics.
+              type = infer_text_type(child.str_val_, len);
               break;
             case JsonValue::J_OBJECT:
             case JsonValue::J_ARRAY:
