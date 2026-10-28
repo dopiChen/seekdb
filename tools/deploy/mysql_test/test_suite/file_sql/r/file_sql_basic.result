@@ -118,44 +118,44 @@ id	name	city
 1	n01	BJ
 2	n02	NULL
 DESCRIBE SELECT * FROM read_parquet('/tmp/seekdb_file_sql_data/p_snappy.parquet');;
-Field	Type	Null
-id	bigint	YES
-name	varchar	YES
-score	double	YES
-dept	varchar	YES
-birth	date	YES
-active	tinyint(1)	YES
+column_name	column_type	null	key	default	extra
+id	BIGINT	YES	NULL	NULL	NULL
+name	VARCHAR	YES	NULL	NULL	NULL
+score	DOUBLE	YES	NULL	NULL	NULL
+dept	VARCHAR	YES	NULL	NULL	NULL
+birth	DATE	YES	NULL	NULL	NULL
+active	BOOLEAN	YES	NULL	NULL	NULL
 DESCRIBE SELECT * FROM read_csv('/tmp/seekdb_file_sql_data/people.csv');;
-Field	Type	Null
-id	bigint	YES
-name	varchar(8)	YES
-score	double	YES
-dept	varchar(5)	YES
-birth	date	YES
-active	varchar(5)	YES
-note	varchar(11)	YES
+column_name	column_type	null	key	default	extra
+id	BIGINT	NO	NULL	NULL	NULL
+name	VARCHAR	NO	NULL	NULL	NULL
+score	DOUBLE	YES	NULL	NULL	NULL
+dept	VARCHAR	NO	NULL	NULL	NULL
+birth	DATE	YES	NULL	NULL	NULL
+active	VARCHAR	NO	NULL	NULL	NULL
+note	VARCHAR	YES	NULL	NULL	NULL
 DESCRIBE SELECT * FROM read_json('/tmp/seekdb_file_sql_data/people.jsonl');;
-Field	Type	Null
-id	bigint	YES
-name	varchar(6)	YES
-score	double	YES
-dept	varchar(5)	YES
-city	varchar(2)	YES
-active	tinyint(1)	YES
+column_name	column_type	null	key	default	extra
+id	BIGINT	YES	NULL	NULL	NULL
+name	VARCHAR	YES	NULL	NULL	NULL
+score	DOUBLE	YES	NULL	NULL	NULL
+dept	VARCHAR	YES	NULL	NULL	NULL
+city	VARCHAR	YES	NULL	NULL	NULL
+active	BOOLEAN	YES	NULL	NULL	NULL
 DESCRIBE SELECT * FROM glob('/tmp/seekdb_file_sql_data/*.csv');;
-Field	Type	Null
-file	varchar(1024)	NO
+column_name	column_type	null	key	default	extra
+file	VARCHAR	NO	NULL	NULL	NULL
 SELECT d, dt, txt, allnull FROM read_csv('/tmp/seekdb_file_sql_data/types.csv') ORDER BY d DESC;;
 d	dt	txt	allnull
 2020-02-29	2020-02-29 23:59:59.000000	abc	NULL
 2000-03-01	2000-03-01 12:00:00.123456	NULL	 
 1970-01-01	1970-01-01 00:00:00.000000	1	NULL
 DESCRIBE SELECT * FROM read_csv('/tmp/seekdb_file_sql_data/types.csv');;
-Field	Type	Null
-d	date	YES
-dt	datetime	YES
-txt	varchar(3)	YES
-allnull	varchar(1)	YES
+column_name	column_type	null	key	default	extra
+d	DATE	NO	NULL	NULL	NULL
+dt	DATETIME	NO	NULL	NULL	NULL
+txt	VARCHAR	YES	NULL	NULL	NULL
+allnull	VARCHAR	YES	NULL	NULL	NULL
 SELECT id AS k, UPPER(dept) AS d, score * 2 AS s2 FROM read_csv('/tmp/seekdb_file_sql_data/people.csv') WHERE score IS NOT NULL ORDER BY s2 DESC LIMIT 1;;
 k	d	s2
 1	ENG	181

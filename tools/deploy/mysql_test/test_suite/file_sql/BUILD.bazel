@@ -2,6 +2,6 @@ package(default_visibility = ["//visibility:private"])
 
 filegroup(
     name = "data",
-    srcs = glob(["data/*"]),
+    srcs = glob(["data/*", "data/official/*"]),
     visibility = ["//unittest:__subpackages__"],
 )
