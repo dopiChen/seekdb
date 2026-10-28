@@ -62,13 +62,14 @@ def _parser_impl(ctx):
     ctx.actions.run(
         executable = ctx.file._flex,
         inputs = [ctx.file.lexer_source],
-        tools = ctx.files._runtime,
         outputs = [lexer, ctx.outputs.lexer_header],
+        tools = ctx.files._runtime + ctx.files._m4,
         arguments = ctx.attr.flex_options + [
             "--header-file=" + ctx.outputs.lexer_header.path,
             "--outfile=" + lexer.path,
             ctx.file.lexer_source.path,
         ],
+        env = {"M4": ctx.files._m4[0].path} if ctx.files._m4 else {},
         mnemonic = "Flex",
     )
     if ctx.attr.lexer_patch:

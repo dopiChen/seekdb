@@ -42,11 +42,14 @@
 #include "sql/parser/sql_parser_base.h"
 
 #define GEN_EXPLAN_STMT(no_use, explain_stmt, explain_type, display_type, stmt, into_table, set_statement_id) \
-  (void)(no_use); \
   ParseNode *type_node = NULL; \
   ParseNode *display_node = NULL; \
   if (0 != explain_type) { \
     malloc_terminal_node(type_node, result->malloc_pool_, explain_type); \
+  } else if (NULL != (no_use)) { \
+    /* DESCRIBE/DESC is marked with a T_INT format node (value_ = 1). */ \
+    /* Note: T_EXPLAIN::value_ must stay INT64_MAX for question_mark_issue. */ \
+    type_node = (no_use); \
   } \
   if (0 != display_type) { \
     malloc_terminal_node(display_node, result->malloc_pool_, display_type); \
@@ -337,7 +340,7 @@ END_P SET_VAR DELIMITER
         REPEATABLE RESET RESPECT RESTART RESTORE RESUME RETURNED_SQLSTATE RETURNS RETURNING REVERSE
         REWRITE ROLLBACK ROLLUP ROUTINE ROW ROWID ROW_COUNT ROW_FORMAT ROWS RTREE
         RUN RECYCLEBIN REPLICATION ROTATE ROW_NUMBER RUDUNDANT RECURSIVE RANDOM REDO_TRANSPORT_OPTIONS
-        RANK READ_ONLY RECOVERY REJECT ROLE
+        RANK READ_ONLY RECOVERY REJECT ROLE READ_CSV READ_JSON READ_NDJSON READ_PARQUET GLOB_READ
 
         SAMPLE SAVEPOINT SCALARS SCHEMA_NAME SCN SCOPE SCORE SECOND SECURITY SEED
         SEMISTRUCT_ENCODING_TYPE SERIAL SERIALIZABLE SESSION SESSION_USER SET_TP SHARE SHARED SHUTDOWN SIGNED
@@ -499,6 +502,7 @@ END_P SET_VAR DELIMITER
 %type <node> skip_index_type opt_skip_index_type_list
 %type <node> vec_index_params vec_index_param vec_index_param_value opt_with_vector_index_parameters
 %type <node> json_table_expr unnest_expr mock_jt_on_error_on_empty jt_column_list json_table_column_def
+%type <node> file_table_expr file_table_alias file_table_arg_list file_table_arg
 %type <node> json_table_ordinality_column_def json_table_exists_column_def json_table_value_column_def json_table_nested_column_def
 %type <node> opt_value_on_empty_or_error_or_mismatch opt_on_mismatch
 %type <node> table_values_clause table_values_clause_with_order_by_and_limit values_row_list row_value
@@ -10845,6 +10849,10 @@ tbl_name
 {
   $$ = $1;
 }
+| file_table_expr
+{
+  $$ = $1;
+}
 | hybrid_search_expr
 {
   $$ = $1;
@@ -12307,8 +12315,16 @@ explain_or_desc relation_factor opt_desc_column_option
 
 explain_or_desc:
 EXPLAIN {$$ = NULL;}
-| DESCRIBE {$$ = NULL;}
-| DESC  {$$ = NULL;}
+| DESCRIBE
+{
+  malloc_terminal_node($$, result->malloc_pool_, T_INT);
+  $$->value_ = 1;
+}
+| DESC
+{
+  malloc_terminal_node($$, result->malloc_pool_, T_INT);
+  $$->value_ = 1;
+}
 ;
 
 explainable_stmt:
@@ -17452,6 +17468,92 @@ UNNEST '(' simple_expr_list ')'
 }
 ;
 
+/*===========================================================
+ *
+ *  FILE TABLE (read_csv / read_json / read_ndjson / read_parquet / glob)
+ *
+ *============================================================*/
+file_table_expr:
+READ_CSV '(' file_table_arg_list ')' file_table_alias
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_TABLE_EXPRESSION, 3, $3, $5, NULL);
+  $$->value_ = 1; /* csv */
+}
+| READ_JSON '(' file_table_arg_list ')' file_table_alias
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_TABLE_EXPRESSION, 3, $3, $5, NULL);
+  $$->value_ = 2; /* json / ndjson */
+}
+| READ_NDJSON '(' file_table_arg_list ')' file_table_alias
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_TABLE_EXPRESSION, 3, $3, $5, NULL);
+  $$->value_ = 3; /* ndjson */
+}
+| READ_PARQUET '(' file_table_arg_list ')' file_table_alias
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_TABLE_EXPRESSION, 3, $3, $5, NULL);
+  $$->value_ = 4; /* parquet */
+}
+| GLOB_READ '(' file_table_arg_list ')' file_table_alias
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_TABLE_EXPRESSION, 3, $3, $5, NULL);
+  $$->value_ = 5; /* glob */
+}
+;
+
+file_table_alias:
+/* empty */
+%prec LOWER_PARENS
+{
+  $$ = NULL;
+}
+| relation_name
+{
+  $$ = $1;
+}
+| AS relation_name
+{
+  $$ = $2;
+}
+| relation_name '(' relation_name_list ')'
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_ALIAS, 2, $1, $3);
+}
+| AS relation_name '(' relation_name_list ')'
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_ALIAS, 2, $2, $4);
+}
+;
+
+file_table_arg_list:
+file_table_arg
+{
+  $$ = $1;
+}
+| file_table_arg_list ',' file_table_arg
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_LINK_NODE, 2, $1, $3);
+}
+;
+
+file_table_arg:
+literal
+{
+  $$ = $1;
+}
+| relation_name COMP_EQ literal
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_TABLE_NAMED_ARG, 2, $1, $3);
+}
+| relation_name COMP_EQ '-' literal
+{
+  ParseNode *value_node = NULL;
+  malloc_non_terminal_node(value_node, result->malloc_pool_, T_OP_NEG, 1, $4);
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_TABLE_NAMED_ARG, 2, $1, value_node);
+}
+;
+
+
 hybrid_search_expr:
 HYBRID_SEARCH '(' literal ',' hybrid_search_param ')'
 {
@@ -17606,6 +17708,11 @@ ACCOUNT
 |       CONTAINS
 |       CONTRIBUTORS
 |       COPY
+|       READ_CSV
+|       READ_JSON
+|       READ_NDJSON
+|       READ_PARQUET
+|       GLOB_READ
 |       COUNT
 |       COSINE
 |       CPU

@@ -861,6 +861,45 @@ int OptTableMetas::add_values_table_meta_info(const ObDMLStmt *stmt,
   return ret;
 }
 
+int OptTableMetas::add_file_table_meta_info(const ObDMLStmt *stmt,
+                                            const uint64_t table_id,
+                                            const OptSelectivityCtx &ctx,
+                                            ObFileTableDef *table_def)
+{
+  int ret = OB_SUCCESS;
+  UNUSED(ctx);
+  OptTableMeta *table_meta = NULL;
+  ObSEArray<ColumnItem, 8> column_items;
+  if (OB_ISNULL(stmt) || OB_ISNULL(table_def)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (OB_ISNULL(table_meta = table_metas_.alloc_place_holder())) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+  } else if (OB_FAIL(stmt->get_column_items(table_id, column_items))) {
+  } else {
+    const double rows = static_cast<double>(table_def->row_count_ > 0 ? table_def->row_count_ : 1);
+    table_meta->set_table_id(table_id);
+    table_meta->set_ref_table_id(OB_INVALID_ID);
+    table_meta->set_rows(static_cast<int64_t>(rows));
+    table_meta->set_base_rows(static_cast<int64_t>(rows));
+    for (int64_t i = 0; OB_SUCC(ret) && i < column_items.count(); ++i) {
+      const ColumnItem &column_item = column_items.at(i);
+      OptColumnMeta *column_meta = NULL;
+      if (OB_ISNULL(column_item.expr_)) {
+        ret = OB_ERR_UNEXPECTED;
+      } else if (OB_ISNULL(column_meta = table_meta->get_column_metas().alloc_place_holder())) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+      } else {
+        double avg_len = ObOptEstCost::get_estimate_width_from_type(column_item.expr_->get_result_type());
+        column_meta->init(column_item.column_id_,
+                          revise_selectivity_ndv(rows),
+                          1.0,
+                          avg_len);
+      }
+    }
+  }
+  return ret;
+}
+
 int OptTableMetas::get_set_stmt_output_statistics(const ObSelectStmt &stmt,
                                                   const OptTableMetas &child_table_metas,
                                                   const int64_t idx,
