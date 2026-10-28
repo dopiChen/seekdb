@@ -7827,6 +7827,7 @@ copy_option:
     }
   | copy_option_name opt_equal_mark expr
     {
+      (void)$2;
       malloc_non_terminal_node($$, result->malloc_pool_, T_COPY_OPTION, 2, $1, $3);
     }
   ;
@@ -7843,6 +7844,7 @@ copy_option_name:
     }
   | NULLX
     {
+      (void)$1;
       get_non_reserved_node($$, result->malloc_pool_, @1.first_column, @1.last_column);
     }
   ;
@@ -18023,6 +18025,7 @@ literal
 {
   /* `null = 'NULL'` : NULL is a reserved keyword, so build the argument
    * name node explicitly instead of going through relation_name. */
+  (void)$1;
   ParseNode *name_node = NULL;
   if (NULL == (name_node = new_terminal_node(result->malloc_pool_, T_IDENT))) {
     YYABORT_NO_MEMORY;

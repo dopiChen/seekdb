@@ -6,17 +6,20 @@
 # $PWD, ...) would make the suite fail on any machine other than the one that
 # recorded the result.
 #
+# The fixture list is explicit instead of a glob so that the directory contents is
+# deterministic: data/ also carries the official sample files
+# (basic.csv/basic.jsonl/invalid.txt/simple.parquet) that belong to other
+# cases, and a wildcard copy would change the glob() row counts below.
+#
 # mysqltest (and obd) connect over TCP.  seekdb accepts secure_file_priv
 # changes from connections that reach the server locally - unix socket or
 # loopback TCP - so the SET below works in both harnesses.
 --disable_query_log
 let $FILE_SQL_DATA_DIR = /tmp/seekdb_file_sql_data;
-let $FILE_SQL_MKDIR = mkdir -p "$FILE_SQL_DATA_DIR";
-exec $FILE_SQL_MKDIR;
-let $FILE_SQL_COPY = cp mysql_test/test_suite/file_sql/data/*.csv mysql_test/test_suite/file_sql/data/*.jsonl mysql_test/test_suite/file_sql/data/*.parquet "$FILE_SQL_DATA_DIR"/;
+let $FILE_SQL_RESET = rm -rf "$FILE_SQL_DATA_DIR" && mkdir -p "$FILE_SQL_DATA_DIR";
+exec $FILE_SQL_RESET;
+let $FILE_SQL_COPY = cp mysql_test/test_suite/file_sql/data/people.csv mysql_test/test_suite/file_sql/data/extra.csv mysql_test/test_suite/file_sql/data/nulls.csv mysql_test/test_suite/file_sql/data/types.csv mysql_test/test_suite/file_sql/data/people.jsonl mysql_test/test_suite/file_sql/data/people2.jsonl mysql_test/test_suite/file_sql/data/conflict.jsonl mysql_test/test_suite/file_sql/data/nested.jsonl mysql_test/test_suite/file_sql/data/bad.jsonl mysql_test/test_suite/file_sql/data/one.jsonl mysql_test/test_suite/file_sql/data/p_plain.parquet mysql_test/test_suite/file_sql/data/p_snappy.parquet mysql_test/test_suite/file_sql/data/p_dict.parquet "$FILE_SQL_DATA_DIR"/;
 exec $FILE_SQL_COPY;
-let $FILE_SQL_RM = rm -f "$FILE_SQL_DATA_DIR"/copy_*.csv "$FILE_SQL_DATA_DIR"/copy_*.jsonl "$FILE_SQL_DATA_DIR"/select_into.csv;
-exec $FILE_SQL_RM;
 --enable_query_log
 
 SET GLOBAL secure_file_priv = '/tmp/seekdb_file_sql_data';

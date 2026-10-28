@@ -322,7 +322,7 @@ int parse_datetime_text(const std::string &text, int64_t &us)
     }
     if (FS_OK == ret &&
         (pos != text.size() || hour > 23 || minute > 59 || second > 59 ||
-         0 == fraction_digits && fraction != 0)) {
+         (0 == fraction_digits && fraction != 0))) {
       ret = FS_ERR_BAD_DATA;
     }
     if (FS_OK == ret) {
