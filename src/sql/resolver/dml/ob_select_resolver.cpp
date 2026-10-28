@@ -1667,6 +1667,9 @@ int ObSelectResolver::expand_target_list(
       ret = OB_ERR_UNEXPECTED;
     } else if (OB_FAIL(append(column_items, get_stmt()->get_column_items()))) {
     }
+  } else if (table_item.is_file_table()) {
+    if (OB_FAIL(resolve_all_file_table_columns(table_item, &column_items))) {
+    }
   } else {
     ret = OB_ERR_UNEXPECTED;
   }
@@ -1851,6 +1854,32 @@ int ObSelectResolver::resolve_all_json_table_columns(
   if (OB_ISNULL(column_items)) {
     ret = OB_ERR_UNEXPECTED;
   } else if (OB_FAIL(resolve_json_table_column_all_items(table_item, *column_items))) {
+  }
+  return ret;
+}
+
+int ObSelectResolver::resolve_all_file_table_columns(
+  const TableItem &table_item, ObIArray<ColumnItem> *column_items)
+{
+  int ret = OB_SUCCESS;
+  ObSEArray<ObColumnRefRawExpr *, 8> column_exprs;
+  if (OB_ISNULL(column_items) || OB_ISNULL(get_stmt())) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (OB_FAIL(get_stmt()->get_column_exprs(table_item.table_id_, column_exprs))) {
+  }
+  for (int64_t i = 0; OB_SUCC(ret) && i < column_exprs.count(); ++i) {
+    ColumnItem column_item;
+    ObColumnRefRawExpr *expr = column_exprs.at(i);
+    if (OB_ISNULL(expr)) {
+      ret = OB_ERR_UNEXPECTED;
+    } else {
+      column_item.expr_ = expr;
+      column_item.table_id_ = expr->get_table_id();
+      column_item.column_id_ = expr->get_column_id();
+      column_item.column_name_ = expr->get_column_name();
+      if (OB_FAIL(column_items->push_back(column_item))) {
+      }
+    }
   }
   return ret;
 }
@@ -3112,6 +3141,7 @@ int ObSelectResolver::resolve_into_clause(const ParseNode *node)
     } else {
       new(into_item) ObSelectIntoItem();
       into_item->into_type_ = node->type_;
+      into_item->is_copy_ = (1 == node->value_);
       if (T_INTO_OUTFILE == node->type_) { // into outfile
         if (is_in_set_query()) {
           ret = OB_INAPPROPRIATE_INTO;

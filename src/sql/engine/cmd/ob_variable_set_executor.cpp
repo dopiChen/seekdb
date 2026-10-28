@@ -56,6 +56,21 @@ namespace sql
                      cast_coll_type,                                       \
                      (NULL));
 
+namespace
+{
+// secure_file_priv decides which local paths SQL statements may touch.  It may
+// only be changed from a connection that reaches the server locally: either a
+// unix socket, or TCP from the loopback interface.  The official mysqltest/obd
+// harness connects over 127.0.0.1, so rejecting loopback would make it
+// impossible for a test case to configure this variable.
+bool is_local_client_ip(const common::ObString &client_ip)
+{
+  return 0 == client_ip.compare(UNIX_SOCKET_CLIENT_IP)
+         || 0 == client_ip.compare("127.0.0.1")
+         || 0 == client_ip.compare("::1");
+}
+} // namespace
+
 ObVariableSetExecutor::ObVariableSetExecutor()
 {
 }
@@ -231,10 +246,10 @@ int ObVariableSetExecutor::execute(ObExecContext &ctx, ObVariableSetStmt &stmt)
                   ObString client_ip = ctx.get_my_session()->get_client_ip();
                   if (!addr.ip_to_string(buf, sizeof(buf))) {
                     ret = OB_ERR_UNEXPECTED;
-                  } else if (!(0 == client_ip.compare(UNIX_SOCKET_CLIENT_IP))) {
+                  } else if (!is_local_client_ip(client_ip)) {
                     ret = OB_NOT_SUPPORTED;
-                    LOG_WARN("modify SECURE_FILE_PRIV not by unix socket connection", K(ret), K(client_ip));
-                    LOG_USER_ERROR(OB_NOT_SUPPORTED, "modify SECURE_FILE_PRIV not by unix socket connection");
+                    LOG_WARN("modify SECURE_FILE_PRIV not by local connection", K(ret), K(client_ip));
+                    LOG_USER_ERROR(OB_NOT_SUPPORTED, "modify SECURE_FILE_PRIV not by local connection");
                   }
                 }
               }

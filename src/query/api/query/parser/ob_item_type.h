@@ -2278,6 +2278,10 @@ typedef enum ObItemType
   T_AI_COLUMN_SPEC = 4921,     // AI COLUMN (expr) WITH (options)
   T_AI_COLUMN_OPTION = 4922,
   T_AI_COLUMN_RETRY = 4923,    // ALTER TABLE ... RETRY AI COLUMN col [WHERE expr]
+  T_FILE_TABLE_EXPRESSION = 4924,
+  T_FILE_TABLE_NAMED_ARG = 4925,
+  T_COPY = 4926,
+  T_COPY_OPTION = 4927,
   T_MAX //Attention: add a new type before T_MAX
 } ObItemType;
 

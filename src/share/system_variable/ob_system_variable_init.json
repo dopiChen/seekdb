@@ -10976,6 +10976,19 @@
     "background_cn": "",
     "ref_url": ""
   },
+  "enable_file_sql": {
+    "id": 10754,
+    "name": "enable_file_sql",
+    "default_value": "0",
+    "base_value": "0",
+    "data_type": "bool",
+    "info": "whether enable local file table functions such as read_csv",
+    "flags": "GLOBAL | SESSION | NEED_SERIALIZE",
+    "publish_version": "1.0.0.0",
+    "info_cn": "是否允许 read_csv 等本地文件表函数",
+    "background_cn": "",
+    "ref_url": ""
+  },
   "ai_column_strict_read": {
     "id": 10755,
     "name": "ai_column_strict_read",

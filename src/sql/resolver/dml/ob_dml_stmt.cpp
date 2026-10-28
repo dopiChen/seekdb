@@ -137,6 +137,73 @@ int ColumnItem::deep_copy(ObIRawExprCopier &expr_copier,
   return ret;
 }
 
+int ObFileColumnDef::deep_copy(const ObFileColumnDef &other, ObIAllocator *allocator)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(allocator)) {
+    ret = OB_INVALID_ARGUMENT;
+  } else if (OB_FAIL(ob_write_string(*allocator, other.column_name_, column_name_))) {
+  } else {
+    type_ = other.type_;
+    varchar_length_ = other.varchar_length_;
+    scale_ = other.scale_;
+    nullable_ = other.nullable_;
+  }
+  return ret;
+}
+
+int ObFileTableDef::deep_copy(const ObFileTableDef &other, ObIAllocator *allocator)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(allocator)) {
+    ret = OB_INVALID_ARGUMENT;
+  } else if (OB_FAIL(ob_write_string(*allocator, other.path_, path_))) {
+  } else if (OB_FAIL(ob_write_string(*allocator, other.null_str_, null_str_))) {
+  } else {
+    format_ = other.format_;
+    delimiter_ = other.delimiter_;
+    quote_ = other.quote_;
+    escape_ = other.escape_;
+    has_header_ = other.has_header_;
+    row_count_ = other.row_count_;
+    file_size_ = other.file_size_;
+    file_mtime_sec_ = other.file_mtime_sec_;
+    file_mtime_nsec_ = other.file_mtime_nsec_;
+    file_inode_ = other.file_inode_;
+    for (int64_t i = 0; OB_SUCC(ret) && i < other.columns_.count(); ++i) {
+      ObFileColumnDef col;
+      if (OB_FAIL(col.deep_copy(other.columns_.at(i), allocator))) {
+      } else if (OB_FAIL(columns_.push_back(col))) {
+      }
+    }
+    for (int64_t i = 0; OB_SUCC(ret) && i < other.column_name_list_.count(); ++i) {
+      ObString name;
+      if (OB_FAIL(ob_write_string(*allocator, other.column_name_list_.at(i), name))) {
+      } else if (OB_FAIL(column_name_list_.push_back(name))) {
+      }
+    }
+  }
+  return ret;
+}
+
+int TableItem::deep_copy_file_table_def(const ObFileTableDef& table_def, ObIAllocator* allocator)
+{
+  int ret = OB_SUCCESS;
+  ObFileTableDef *tmp_def = nullptr;
+  if (OB_ISNULL(allocator)) {
+    ret = OB_INVALID_ARGUMENT;
+  } else if (OB_ISNULL(tmp_def = static_cast<ObFileTableDef*>(allocator->alloc(sizeof(ObFileTableDef))))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+  } else {
+    tmp_def = new (tmp_def) ObFileTableDef();
+    if (OB_FAIL(tmp_def->deep_copy(table_def, allocator))) {
+    } else {
+      file_table_def_ = tmp_def;
+    }
+  }
+  return ret;
+}
+
 int TableItem::deep_copy_json_table_def(const ObJsonTableDef& jt_def, ObIRawExprCopier &expr_copier, ObIAllocator* allocator)
 {
   int ret = OB_SUCCESS;
@@ -194,6 +261,8 @@ int TableItem::deep_copy(ObIRawExprCopier &expr_copier,
   } else if (OB_FAIL(part_names_.assign(other.part_names_))) {
   } else if (is_values_table() &&
              OB_FAIL(deep_copy_values_table_def(*other.values_table_def_, expr_copier, allocator))) {
+  } else if (is_file_table() && OB_NOT_NULL(other.file_table_def_) &&
+             OB_FAIL(deep_copy_file_table_def(*other.file_table_def_, allocator))) {
   } else { /* do nothing */ }
   if (OB_SUCC(ret)) {
     if (OB_ISNULL(other.sample_info_)) {
@@ -1558,7 +1627,8 @@ int ObDMLStmt::formalize_stmt_expr_reference(ObRawExprFactory *expr_factory,
       } else if (table_item->is_function_table() ||
                  table_item->is_json_table() ||
                  table_item->for_update_ ||
-                 table_item->is_values_table()) {
+                 table_item->is_values_table() ||
+                 table_item->is_file_table()) {
         if (OB_FAIL(set_sharable_expr_reference(*column_item.expr_, ExplicitedRefType::REF_BY_NORMAL))) {
         } else if (table_item->is_json_table()) {
           if (NULL != column_item.default_value_expr_ 

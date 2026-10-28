@@ -6076,7 +6076,11 @@ int ObResolverUtils::check_secure_path(const common::ObString &secure_file_priv,
       ObCStringHelper helper;
       if (NULL == (real_secure_file = ::realpath(helper.convert(secure_file_priv), buf))) {
 #endif
-        // pass
+        // An unresolvable secure_file_priv must not silently grant access to
+        // every path; treat it as a misconfiguration and deny direct access.
+        ret = OB_ERR_NO_PRIVILEGE;
+        LOG_WARN("failed to resolve secure_file_priv, deny direct path access",
+                 K(secure_file_priv), K(ret));
       } else {
         ObString secure_file_priv_tmp(real_secure_file);
         const int64_t pos = secure_file_priv_tmp.length();

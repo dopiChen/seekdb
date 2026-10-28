@@ -41,17 +41,337 @@
 #include "../../../src/sql/parser/sql_parser_base.h"
 
 #define GEN_EXPLAN_STMT(no_use, explain_stmt, explain_type, display_type, stmt, into_table, set_statement_id) \
-  (void)(no_use); \
   ParseNode *type_node = NULL; \
   ParseNode *display_node = NULL; \
   if (0 != explain_type) { \
     malloc_terminal_node(type_node, result->malloc_pool_, explain_type); \
+  } else if (NULL != (no_use)) { \
+    /* DESCRIBE/DESC is marked with a T_INT format node (value_ = 1). */ \
+    /* Note: T_EXPLAIN::value_ must stay INT64_MAX for question_mark_issue. */ \
+    type_node = (no_use); \
   } \
   if (0 != display_type) { \
     malloc_terminal_node(display_node, result->malloc_pool_, display_type); \
   } \
   malloc_non_terminal_node(explain_stmt, result->malloc_pool_, T_EXPLAIN, 5, \
                            type_node, display_node, into_table, set_statement_id, stmt);
+
+// ---- COPY ... TO support -------------------------------------------------
+// NOTE: this prologue is compiled as plain C (bison C skeleton), so the C++
+// only OceanBase errno constants (OB_SUCCESS/OB_FAIL/...) must NOT be used
+// here.  Use the small C-compatible codes below instead.
+#define COPY_PARSE_OK 0
+#define COPY_PARSE_ERR (-1)
+#define COPY_PARSE_NOMEM (-2)
+#define COPY_PARSE_FAIL(r) (COPY_PARSE_OK != (r))
+static int copy_option_name_equal(const ParseNode *name, const char *opt)
+{
+  return NULL != name && NULL != name->str_value_ &&
+         (int64_t)strlen(opt) == name->str_len_ &&
+         0 == strncasecmp(name->str_value_, opt, name->str_len_);
+}
+
+static ParseNode *copy_append_format_node(void *pool, ParseNode *list, ParseNode *node)
+{
+  ParseNode *link = NULL;
+  if (NULL == node) {
+    // keep list
+  } else if (NULL == list) {
+    list = node;
+  } else if (NULL == (link = new_non_terminal_node(pool, T_LINK_NODE, 2, list, node))) {
+    list = NULL;
+  } else {
+    list = link;
+  }
+  return list;
+}
+
+static int copy_make_string_node(ParseResult *result, const char *str, ParseNode **node)
+{
+  int ret = COPY_PARSE_OK;
+  if (OB_ISNULL(result) || OB_ISNULL(str) || OB_ISNULL(node)) {
+    ret = COPY_PARSE_ERR;
+  } else if (NULL == ((*node) = new_terminal_node(result->malloc_pool_, T_VARCHAR))) {
+    ret = COPY_PARSE_NOMEM;
+  } else if (NULL == ((*node)->str_value_ = parse_strdup(str, result->malloc_pool_,
+                                                         &(*node)->str_len_))) {
+    ret = COPY_PARSE_NOMEM;
+  }
+  return ret;
+}
+
+// COPY option values such as `FORMAT CSV` are parsed as identifiers (T_IDENT or
+// T_COLUMN_REF). Convert them to string literals so that the existing
+// ObResolverUtils::resolve_file_format() can evaluate them as constant strings.
+static int copy_normalize_text_value(ParseResult *result, ParseNode **value)
+{
+  int ret = COPY_PARSE_OK;
+  ParseNode *ident = NULL;
+  if (OB_ISNULL(result) || OB_ISNULL(value) || OB_ISNULL(*value)) {
+    ret = COPY_PARSE_ERR;
+  } else if (T_CHAR == (*value)->type_ || T_VARCHAR == (*value)->type_) {
+    // already a string literal
+  } else if (T_IDENT == (*value)->type_ && NULL != (*value)->str_value_) {
+    ident = *value;
+  } else if (T_COLUMN_REF == (*value)->type_ && 3 == (*value)->num_child_ &&
+             NULL != (*value)->children_[2] && T_IDENT == (*value)->children_[2]->type_) {
+    ident = (*value)->children_[2];
+  }
+  if ((COPY_PARSE_OK == ret) && NULL != ident) {
+    ParseNode *str_node = NULL;
+    if (COPY_PARSE_FAIL(copy_make_string_node(result, ident->str_value_, &str_node))) {
+    } else {
+      *value = str_node;
+    }
+  }
+  return ret;
+}
+
+static int copy_add_format_option(ParseResult *result, ParseNode **list,
+                                  ObItemType type, const char *value)
+{
+  int ret = COPY_PARSE_OK;
+  ParseNode *str_node = NULL;
+  ParseNode *option_node = NULL;
+  if (COPY_PARSE_FAIL(copy_make_string_node(result, value, &str_node))) {
+  } else if (NULL == (option_node = new_non_terminal_node(result->malloc_pool_, type, 1,
+                                                          str_node))) {
+    ret = COPY_PARSE_NOMEM;
+  } else if (NULL == ((*list) = copy_append_format_node(result->malloc_pool_, *list, option_node))) {
+    ret = COPY_PARSE_NOMEM;
+  }
+  return ret;
+}
+
+static int copy_build_format_list(ParseResult *result, ParseNode *options, ParseNode **list)
+{
+  int ret = COPY_PARSE_OK;
+  if (OB_ISNULL(result) || OB_ISNULL(options)) {
+    ret = COPY_PARSE_ERR;
+  } else if (T_LINK_NODE == options->type_) {
+    if (COPY_PARSE_FAIL(copy_build_format_list(result, options->children_[0], list))) {
+    } else if (COPY_PARSE_FAIL(copy_build_format_list(result, options->children_[1], list))) {
+    }
+  } else if (T_COPY_OPTION == options->type_) {
+    ParseNode *name = options->children_[0];
+    ParseNode *value = options->children_[1];
+    ParseNode *format_node = NULL;
+    if (OB_ISNULL(name)) {
+      ret = COPY_PARSE_ERR;
+    } else if (copy_option_name_equal(name, "FORMAT")) {
+      if (OB_ISNULL(value) || COPY_PARSE_FAIL(copy_normalize_text_value(result, &value))) {
+        ret = OB_ISNULL(value) ? COPY_PARSE_ERR : ret;
+      } else if (NULL == (format_node = new_non_terminal_node(result->malloc_pool_,
+                                                               T_EXTERNAL_FILE_FORMAT_TYPE, 1, value))) {
+        ret = COPY_PARSE_NOMEM;
+      }
+    } else if (copy_option_name_equal(name, "DELIMITER")) {
+      if (OB_ISNULL(value) || COPY_PARSE_FAIL(copy_normalize_text_value(result, &value))) {
+        ret = OB_ISNULL(value) ? COPY_PARSE_ERR : ret;
+      } else if (NULL == (format_node = new_non_terminal_node(result->malloc_pool_,
+                                                               T_FIELD_TERMINATED_STR, 1, value))) {
+        ret = COPY_PARSE_NOMEM;
+      }
+    } else if (copy_option_name_equal(name, "QUOTE")) {
+      if (OB_ISNULL(value) || COPY_PARSE_FAIL(copy_normalize_text_value(result, &value))) {
+        ret = OB_ISNULL(value) ? COPY_PARSE_ERR : ret;
+      } else if (NULL == (format_node = new_non_terminal_node(result->malloc_pool_,
+                                                               T_CLOSED_STR, 1, value))) {
+        ret = COPY_PARSE_NOMEM;
+      }
+    } else if (copy_option_name_equal(name, "ESCAPE")) {
+      if (OB_ISNULL(value) || COPY_PARSE_FAIL(copy_normalize_text_value(result, &value))) {
+        ret = OB_ISNULL(value) ? COPY_PARSE_ERR : ret;
+      } else if (NULL == (format_node = new_non_terminal_node(result->malloc_pool_,
+                                                               T_ESCAPED_STR, 1, value))) {
+        ret = COPY_PARSE_NOMEM;
+      }
+    } else if (copy_option_name_equal(name, "HEADER")) {
+      ParseNode *bool_node = value;
+      if (NULL == bool_node) {
+        if (NULL == (bool_node = new_terminal_node(result->malloc_pool_, T_INT))) {
+          ret = COPY_PARSE_NOMEM;
+        } else {
+          bool_node->value_ = 1;
+        }
+      } else if (T_BOOL == bool_node->type_ || T_INT == bool_node->type_) {
+        // HEADER / HEADER 1 / HEADER 0 / HEADER true
+        bool_node->type_ = T_INT;
+        bool_node->value_ = (0 != bool_node->value_) ? 1 : 0;
+      } else if (T_IDENT == bool_node->type_ && NULL != bool_node->str_value_) {
+        if (0 == strncasecmp(bool_node->str_value_, "true", 4) && 4 == bool_node->str_len_) {
+          bool_node->type_ = T_INT;
+          bool_node->value_ = 1;
+        } else if (0 == strncasecmp(bool_node->str_value_, "false", 5) && 5 == bool_node->str_len_) {
+          bool_node->type_ = T_INT;
+          bool_node->value_ = 0;
+        } else {
+          ret = COPY_PARSE_ERR;
+        }
+      } else {
+        ret = COPY_PARSE_ERR;
+      }
+      if ((COPY_PARSE_OK == ret) && NULL == (format_node = new_non_terminal_node(result->malloc_pool_,
+                                                                       T_PARSE_HEADER, 1, bool_node))) {
+        ret = COPY_PARSE_NOMEM;
+      }
+    } else if (copy_option_name_equal(name, "NULL")) {
+      ParseNode *expr_list = NULL;
+      if (OB_ISNULL(value) || COPY_PARSE_FAIL(copy_normalize_text_value(result, &value))) {
+        ret = OB_ISNULL(value) ? COPY_PARSE_ERR : ret;
+      } else if (NULL == (expr_list = merge_tree(result->malloc_pool_, &result->extra_errno_,
+                                                 T_EXPR_LIST, value))) {
+        ret = COPY_PARSE_NOMEM;
+      } else if (NULL == (format_node = new_non_terminal_node(result->malloc_pool_,
+                                                              T_NULL_IF_EXETERNAL, 1, expr_list))) {
+        ret = COPY_PARSE_NOMEM;
+      }
+    } else {
+      ret = COPY_PARSE_ERR;
+    }
+    if (COPY_PARSE_OK == ret) {
+      if (NULL == ((*list) = copy_append_format_node(result->malloc_pool_, *list, format_node))) {
+        ret = COPY_PARSE_NOMEM;
+      }
+    }
+  } else {
+    ret = COPY_PARSE_ERR;
+  }
+  if (COPY_PARSE_FAIL(ret) && NULL != result && OB_PARSER_SUCCESS == result->extra_errno_) {
+    result->extra_errno_ = (COPY_PARSE_NOMEM == ret) ? OB_PARSER_ERR_NO_MEMORY
+                                                              : OB_PARSER_ERR_UNEXPECTED;
+  }
+  return ret;
+}
+
+static int copy_build_into_node(ParseResult *result, ParseNode *path, ParseNode *options,
+                                ParseNode **into_node)
+{
+  int ret = COPY_PARSE_OK;
+  ParseNode *format_list = NULL;
+  ParseNode *merged_format = NULL;
+  if (OB_ISNULL(result) || OB_ISNULL(path) || OB_ISNULL(into_node)) {
+    ret = COPY_PARSE_ERR;
+  } else {
+    *into_node = NULL;
+  }
+  if ((COPY_PARSE_OK == ret) && NULL != options && COPY_PARSE_FAIL(copy_build_format_list(result, options, &format_list))) {
+  }
+  // COPY always exports CSV. Defaults follow RFC4180: comma delimiter, double
+  // quote for both enclosing and escaping. Explicit options override them.
+  int has_format = 0;
+  int has_delimiter = 0;
+  int has_quote = 0;
+  int has_escape = 0;
+  if ((COPY_PARSE_OK == ret)) {
+    ParseNode *nodes[64];
+    int64_t node_cnt = 0;
+    ParseNode *stack[64];
+    int64_t top = 0;
+    if (NULL != format_list) {
+      stack[top++] = format_list;
+    }
+    while ((COPY_PARSE_OK == ret) && top > 0) {
+      ParseNode *cur = stack[--top];
+      if (NULL == cur) {
+      } else if (T_LINK_NODE == cur->type_) {
+        if (top + 2 > 64) {
+          ret = COPY_PARSE_ERR;
+        } else {
+          stack[top++] = cur->children_[0];
+          stack[top++] = cur->children_[1];
+        }
+      } else if (node_cnt >= 64) {
+        ret = COPY_PARSE_ERR;
+      } else {
+        nodes[node_cnt++] = cur;
+        if (T_EXTERNAL_FILE_FORMAT_TYPE == cur->type_) {
+          has_format = 1;
+        } else if (T_FIELD_TERMINATED_STR == cur->type_) {
+          has_delimiter = 1;
+        } else if (T_CLOSED_STR == cur->type_) {
+          has_quote = 1;
+        } else if (T_ESCAPED_STR == cur->type_) {
+          has_escape = 1;
+        }
+      }
+    }
+  }
+  if ((COPY_PARSE_OK == ret) && !has_format
+      && COPY_PARSE_FAIL(copy_add_format_option(result, &format_list, T_EXTERNAL_FILE_FORMAT_TYPE, "CSV"))) {
+  } else if ((COPY_PARSE_OK == ret) && !has_delimiter
+             && COPY_PARSE_FAIL(copy_add_format_option(result, &format_list, T_FIELD_TERMINATED_STR, ","))) {
+  } else if ((COPY_PARSE_OK == ret) && !has_quote
+             && COPY_PARSE_FAIL(copy_add_format_option(result, &format_list, T_CLOSED_STR, "\""))) {
+  } else if ((COPY_PARSE_OK == ret) && !has_escape
+             && COPY_PARSE_FAIL(copy_add_format_option(result, &format_list, T_ESCAPED_STR, "\""))) {
+  } else if ((COPY_PARSE_OK == ret)) {
+    if (NULL == (merged_format = merge_tree(result->malloc_pool_, &result->extra_errno_,
+                                            T_EXTERNAL_FILE_FORMAT, format_list))) {
+      ret = COPY_PARSE_NOMEM;
+    } else if (NULL == ((*into_node) = new_non_terminal_node(result->malloc_pool_,
+                                                             T_INTO_OUTFILE, 3,
+                                                             path, merged_format, NULL))) {
+      ret = COPY_PARSE_NOMEM;
+    } else {
+      (*into_node)->value_ = 1; // mark COPY semantics
+    }
+  }
+  if (COPY_PARSE_FAIL(ret) && NULL != result && OB_PARSER_SUCCESS == result->extra_errno_) {
+    result->extra_errno_ = (COPY_PARSE_NOMEM == ret) ? OB_PARSER_ERR_NO_MEMORY
+                                                              : OB_PARSER_ERR_UNEXPECTED;
+  }
+  return ret;
+}
+
+static int copy_make_select_star(ParseResult *result, ParseNode *from_item, ParseNode *into_node,
+                                 ParseNode **select_node)
+{
+  int ret = COPY_PARSE_OK;
+  ParseNode *star_node = NULL;
+  ParseNode *project_str = NULL;
+  ParseNode *project_list = NULL;
+  ParseNode *from_list = NULL;
+  if (OB_ISNULL(result) || OB_ISNULL(from_item) || OB_ISNULL(into_node) ||
+      OB_ISNULL(select_node)) {
+    ret = COPY_PARSE_ERR;
+  } else {
+    *select_node = NULL;
+  }
+  if ((COPY_PARSE_OK == ret) && NULL == (star_node = new_terminal_node(result->malloc_pool_, T_STAR))) {
+    ret = COPY_PARSE_NOMEM;
+  } else if (NULL == (project_str = new_non_terminal_node(result->malloc_pool_,
+                                                          T_PROJECT_STRING, 1, star_node))) {
+    ret = COPY_PARSE_NOMEM;
+  } else if (NULL == (project_str->str_value_ = parse_strdup("*", result->malloc_pool_,
+                                                              &project_str->str_len_))) {
+    ret = COPY_PARSE_NOMEM;
+  } else if (NULL == (project_list = merge_tree(result->malloc_pool_, &result->extra_errno_,
+                                                T_PROJECT_LIST, project_str))) {
+    ret = COPY_PARSE_NOMEM;
+  } else if (NULL == (from_list = merge_tree(result->malloc_pool_, &result->extra_errno_,
+                                             T_FROM_LIST, from_item))) {
+    ret = COPY_PARSE_NOMEM;
+  } else if (NULL == ((*select_node) = new_non_terminal_node(result->malloc_pool_, T_SELECT,
+                                                           PARSE_SELECT_MAX_IDX,
+                                                           NULL, NULL, NULL, NULL, NULL,
+                                                           NULL, NULL, NULL, NULL, NULL,
+                                                           NULL, NULL, NULL, NULL, NULL,
+                                                           NULL, NULL, NULL, NULL, NULL,
+                                                           NULL, NULL, NULL, NULL, NULL))) {
+    ret = COPY_PARSE_NOMEM;
+  } else {
+    (*select_node)->children_[PARSE_SELECT_SELECT] = project_list;
+    (*select_node)->children_[PARSE_SELECT_FROM] = from_list;
+    (*select_node)->children_[PARSE_SELECT_INTO] = into_node;
+  }
+  if (COPY_PARSE_FAIL(ret) && NULL != result && OB_PARSER_SUCCESS == result->extra_errno_) {
+    result->extra_errno_ = (COPY_PARSE_NOMEM == ret) ? OB_PARSER_ERR_NO_MEMORY
+                                                              : OB_PARSER_ERR_UNEXPECTED;
+  }
+  return ret;
+}
+// -------------------------------------------------------------------------
 %}
 
 %destructor {destroy_tree($$);}<node>
@@ -336,7 +656,7 @@ END_P SET_VAR DELIMITER
         REPEATABLE RESET RESPECT RESTART RESTORE RESUME RETURNED_SQLSTATE RETURNS RETURNING REVERSE
         REWRITE ROLLBACK ROLLUP ROUTINE ROW ROWID ROW_COUNT ROW_FORMAT ROWS RTREE
         RUN RECYCLEBIN REPLICATION ROTATE ROW_NUMBER RUDUNDANT RECURSIVE RANDOM REDO_TRANSPORT_OPTIONS
-        RANK READ_ONLY RECOVERY REJECT ROLE
+        RANK READ_ONLY RECOVERY REJECT ROLE READ_CSV READ_JSON READ_NDJSON READ_PARQUET GLOB_READ
 
         SAMPLE SAVEPOINT SCALARS SCHEMA_NAME SCN SCOPE SCORE SECOND SECURITY SEED
         SEMISTRUCT_ENCODING_TYPE SERIAL SERIALIZABLE SESSION SESSION_USER SET_TP SHARE SHARED SHUTDOWN SIGNED
@@ -373,6 +693,7 @@ END_P SET_VAR DELIMITER
 //-----------------------------non_reserved keyword end---------------------------------------------
 %type <node> sql_stmt stmt_list stmt opt_end_p
 %type <node> select_stmt update_stmt delete_stmt
+%type <node> copy_stmt copy_options_opt copy_option_list copy_option copy_option_name
 %type <node> insert_stmt single_table_insert values_clause dml_table_name
 %type <node> create_table_stmt create_table_like_stmt fork_table_stmt fork_database_stmt diff_table_stmt merge_table_stmt opt_table_option_list table_option_list table_option table_option_list_space_seperated parallel_option lob_storage_clause lob_storage_parameter lob_storage_parameters lob_chunk_size
 %type <node> index_or_heap
@@ -499,6 +820,7 @@ END_P SET_VAR DELIMITER
 %type <node> vec_index_params vec_index_param vec_index_param_value opt_with_vector_index_parameters
 %type <node> opt_ai_column_options ai_column_option_list ai_column_option
 %type <node> json_table_expr unnest_expr mock_jt_on_error_on_empty jt_column_list json_table_column_def
+%type <node> file_table_expr file_table_alias file_table_arg_list file_table_arg
 %type <node> json_table_ordinality_column_def json_table_exists_column_def json_table_value_column_def json_table_nested_column_def
 %type <node> opt_value_on_empty_or_error_or_mismatch opt_on_mismatch
 %type <node> table_values_clause table_values_clause_with_order_by_and_limit values_row_list row_value
@@ -557,6 +879,7 @@ opt_end_p:
 /* only preparable statement will set question mark size */
 stmt:
     select_stmt             { $$ = $1; question_mark_issue($$, result); }
+  | copy_stmt               { $$ = $1; question_mark_issue($$, result); }
   | insert_stmt             { $$ = $1; question_mark_issue($$, result); }
   | create_table_stmt       {
     $$ = $1;
@@ -3497,8 +3820,6 @@ opt_time_func_fsp_i:
 | '('  ')'        { $$[0] = 0; $$[1] = 0; }
 | /*EMPTY*/       { $$[0] = 0; $$[1] = 0; }
 ;
-
-
 
 substr_or_substring:
 SUBSTR
@@ -7425,6 +7746,109 @@ TABLE { $$ = NULL; }
 
 /*****************************************************************************
  *
+ * COPY table-or-query TO 'path' [(format options)]
+ *
+ *****************************************************************************/
+copy_stmt:
+    COPY relation_factor TO STRING_VALUE copy_options_opt
+    {
+      ParseNode *into_node = NULL;
+      ParseNode *select_node = NULL;
+      ParseNode *from_item = NULL;
+      if (NULL == (from_item = new_non_terminal_node(result->malloc_pool_, T_ORG, 4,
+                                                     $2, NULL, NULL, NULL))) {
+        yyerror(&@1, result, "failed to build COPY source");
+        YYABORT_NO_MEMORY;
+      } else if (COPY_PARSE_FAIL(copy_build_into_node(result, $4, $5, &into_node))) {
+        yyerror(&@1, result, "failed to build COPY options");
+        YYABORT_UNEXPECTED;
+      } else if (COPY_PARSE_FAIL(copy_make_select_star(result, from_item, into_node, &select_node))) {
+        yyerror(&@1, result, "failed to build COPY query");
+        YYABORT_UNEXPECTED;
+      } else {
+        $$ = select_node;
+        setup_token_pos_info($$, @1.first_column - 1, @4.last_column - @1.first_column + 1);
+      }
+    }
+  | COPY file_table_expr TO STRING_VALUE copy_options_opt
+    {
+      ParseNode *into_node = NULL;
+      ParseNode *select_node = NULL;
+      if (COPY_PARSE_FAIL(copy_build_into_node(result, $4, $5, &into_node))) {
+        yyerror(&@1, result, "failed to build COPY options");
+        YYABORT_UNEXPECTED;
+      } else if (COPY_PARSE_FAIL(copy_make_select_star(result, $2, into_node, &select_node))) {
+        yyerror(&@1, result, "failed to build COPY query");
+        YYABORT_UNEXPECTED;
+      } else {
+        $$ = select_node;
+        setup_token_pos_info($$, @1.first_column - 1, @4.last_column - @1.first_column + 1);
+      }
+    }
+  | COPY select_stmt TO STRING_VALUE copy_options_opt
+    {
+      ParseNode *into_node = NULL;
+      if (OB_ISNULL($2) || T_SELECT != $2->type_) {
+        yyerror(&@1, result, "invalid COPY query");
+        YYABORT_UNEXPECTED;
+      } else if (NULL != $2->children_[PARSE_SELECT_INTO] ||
+                 NULL != $2->children_[PARSE_SELECT_INTO_EXTRA]) {
+        yyerror(&@1, result, "COPY query can not contain INTO clause");
+        YYABORT_UNEXPECTED;
+      } else if (COPY_PARSE_FAIL(copy_build_into_node(result, $4, $5, &into_node))) {
+        yyerror(&@1, result, "failed to build COPY options");
+        YYABORT_UNEXPECTED;
+      } else {
+        $2->children_[PARSE_SELECT_INTO_EXTRA] = into_node;
+        $$ = $2;
+        setup_token_pos_info($$, @1.first_column - 1, @4.last_column - @1.first_column + 1);
+      }
+    }
+  ;
+
+copy_options_opt:
+    /*EMPTY*/ { $$ = NULL; }
+  | '(' copy_option_list ')' { $$ = $2; }
+  | WITH '(' copy_option_list ')' { $$ = $3; }
+  ;
+
+copy_option_list:
+    copy_option { $$ = $1; }
+  | copy_option_list ',' copy_option
+    {
+      malloc_non_terminal_node($$, result->malloc_pool_, T_LINK_NODE, 2, $1, $3);
+    }
+  ;
+
+copy_option:
+    copy_option_name
+    {
+      malloc_non_terminal_node($$, result->malloc_pool_, T_COPY_OPTION, 2, $1, NULL);
+    }
+  | copy_option_name opt_equal_mark expr
+    {
+      malloc_non_terminal_node($$, result->malloc_pool_, T_COPY_OPTION, 2, $1, $3);
+    }
+  ;
+
+copy_option_name:
+    NAME_OB { $$ = $1; }
+  | unreserved_keyword
+    {
+      get_non_reserved_node($$, result->malloc_pool_, @1.first_column, @1.last_column);
+    }
+  | DELIMITER
+    {
+      get_non_reserved_node($$, result->malloc_pool_, @1.first_column, @1.last_column);
+    }
+  | NULLX
+    {
+      get_non_reserved_node($$, result->malloc_pool_, @1.first_column, @1.last_column);
+    }
+  ;
+
+/*****************************************************************************
+ *
  * create view
  *
  *****************************************************************************/
@@ -10525,8 +10949,6 @@ opt_asc_desc opt_null_pos
   }
 }
 
-
-
 opt_asc_desc:
 /* EMPTY */
 { malloc_terminal_node($$, result->malloc_pool_, T_SORT_ASC); $$->value_ = 2; $$->is_empty_ = 1;}
@@ -10889,6 +11311,10 @@ tbl_name
   $$->value_ = 1; // value_ = 1 means with parentheses
 }
 | unnest_expr
+{
+  $$ = $1;
+}
+| file_table_expr
 {
   $$ = $1;
 }
@@ -12354,8 +12780,16 @@ explain_or_desc relation_factor opt_desc_column_option
 
 explain_or_desc:
 EXPLAIN {$$ = NULL;}
-| DESCRIBE {$$ = NULL;}
-| DESC  {$$ = NULL;}
+| DESCRIBE
+{
+  malloc_terminal_node($$, result->malloc_pool_, T_INT);
+  $$->value_ = 1;
+}
+| DESC
+{
+  malloc_terminal_node($$, result->malloc_pool_, T_INT);
+  $$->value_ = 1;
+}
 ;
 
 explainable_stmt:
@@ -15666,14 +16100,6 @@ PLAN
 
 
 
-
-
-
-
-
-
-
-
 runtime_selector:
 NAME_OB opt_equal_mark runtime_selector_target
 {
@@ -15809,8 +16235,6 @@ file_id
   $$ = NULL;
 }
 ;
-
-
 
 
 alter_system_set_parameter_actions:
@@ -16256,10 +16680,6 @@ isolation_level:
   malloc_terminal_node($$, result->malloc_pool_, T_INT);
   $$->value_ = 3;
 };
-
-
-
-
 
 
 
@@ -17516,6 +17936,106 @@ UNNEST '(' simple_expr_list ')'
 }
 ;
 
+/*===========================================================
+ *
+ *  FILE TABLE (read_csv / read_json / read_ndjson / read_parquet / glob)
+ *
+ *============================================================*/
+file_table_expr:
+READ_CSV '(' file_table_arg_list ')' file_table_alias
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_TABLE_EXPRESSION, 3, $3, $5, NULL);
+  $$->value_ = 1; /* csv */
+}
+| READ_JSON '(' file_table_arg_list ')' file_table_alias
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_TABLE_EXPRESSION, 3, $3, $5, NULL);
+  $$->value_ = 2; /* json / ndjson */
+}
+| READ_NDJSON '(' file_table_arg_list ')' file_table_alias
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_TABLE_EXPRESSION, 3, $3, $5, NULL);
+  $$->value_ = 3; /* ndjson */
+}
+| READ_PARQUET '(' file_table_arg_list ')' file_table_alias
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_TABLE_EXPRESSION, 3, $3, $5, NULL);
+  $$->value_ = 4; /* parquet */
+}
+| GLOB_READ '(' file_table_arg_list ')' file_table_alias
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_TABLE_EXPRESSION, 3, $3, $5, NULL);
+  $$->value_ = 5; /* glob */
+}
+;
+
+file_table_alias:
+/* empty */
+%prec LOWER_PARENS
+{
+  $$ = NULL;
+}
+| relation_name
+{
+  $$ = $1;
+}
+| AS relation_name
+{
+  $$ = $2;
+}
+| relation_name '(' relation_name_list ')'
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_ALIAS, 2, $1, $3);
+}
+| AS relation_name '(' relation_name_list ')'
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_ALIAS, 2, $2, $4);
+}
+;
+
+file_table_arg_list:
+file_table_arg
+{
+  $$ = $1;
+}
+| file_table_arg_list ',' file_table_arg
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_LINK_NODE, 2, $1, $3);
+}
+;
+
+file_table_arg:
+literal
+{
+  $$ = $1;
+}
+| relation_name COMP_EQ literal
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_TABLE_NAMED_ARG, 2, $1, $3);
+}
+| relation_name COMP_EQ '-' literal
+{
+  ParseNode *value_node = NULL;
+  malloc_non_terminal_node(value_node, result->malloc_pool_, T_OP_NEG, 1, $4);
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_TABLE_NAMED_ARG, 2, $1, value_node);
+}
+| NULLX COMP_EQ literal
+{
+  /* `null = 'NULL'` : NULL is a reserved keyword, so build the argument
+   * name node explicitly instead of going through relation_name. */
+  ParseNode *name_node = NULL;
+  if (NULL == (name_node = new_terminal_node(result->malloc_pool_, T_IDENT))) {
+    YYABORT_NO_MEMORY;
+  } else if (NULL == (name_node->str_value_ = parse_strdup("null", result->malloc_pool_,
+                                                            &name_node->str_len_))) {
+    YYABORT_NO_MEMORY;
+  } else {
+    malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_TABLE_NAMED_ARG, 2, name_node, $3);
+  }
+}
+;
+
+
 hybrid_search_expr:
 HYBRID_SEARCH '(' literal ',' hybrid_search_param ')'
 {
@@ -17670,6 +18190,11 @@ ACCOUNT
 |       CONTAINS
 |       CONTRIBUTORS
 |       COPY
+|       READ_CSV
+|       READ_JSON
+|       READ_NDJSON
+|       READ_PARQUET
+|       GLOB_READ
 |       COUNT
 |       COSINE
 |       CPU

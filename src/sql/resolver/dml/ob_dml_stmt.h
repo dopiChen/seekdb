@@ -129,6 +129,64 @@ struct ObValuesTableDef {
                        K(access_type_), K(is_const_), K(column_types_));
 };
 
+/**
+ * Column definition of a file table (read_csv/read_json/read_ndjson/read_parquet/glob).
+ * type_ uses the FileColumnType values defined in
+ * sql/engine/basic/ob_file_scan_utils.h (FT_NULL..FT_VARCHAR).
+ */
+struct ObFileColumnDef
+{
+  ObFileColumnDef()
+    : column_name_(), type_(0), varchar_length_(0), scale_(-1), nullable_(true) {}
+  common::ObString column_name_;
+  int32_t type_;
+  int64_t varchar_length_;
+  int64_t scale_;
+  bool nullable_;
+  int deep_copy(const ObFileColumnDef &other, ObIAllocator *allocator);
+  TO_STRING_KV(K_(column_name), K_(type), K_(varchar_length), K_(scale), K_(nullable));
+};
+
+enum ObFileTableFormat
+{
+  FILE_TABLE_FORMAT_INVALID = 0,
+  FILE_TABLE_FORMAT_CSV = 1,
+  FILE_TABLE_FORMAT_JSONL = 2,
+  FILE_TABLE_FORMAT_PARQUET = 3,
+  FILE_TABLE_FORMAT_GLOB = 4,
+};
+
+/**
+ * Runtime description of a file table. The resolver infers the schema by
+ * scanning the file once, the executor re-opens the file and streams rows.
+ */
+struct ObFileTableDef
+{
+  ObFileTableDef()
+    : format_(FILE_TABLE_FORMAT_INVALID), path_(), delimiter_(','), quote_('"'),
+      escape_('"'), has_header_(true), null_str_(), column_name_list_(), row_count_(0),
+      file_size_(0), file_mtime_sec_(0), file_mtime_nsec_(0), file_inode_(0) {}
+  int deep_copy(const ObFileTableDef &other, ObIAllocator *allocator);
+  int32_t format_;
+  common::ObString path_;
+  char delimiter_;
+  char quote_;
+  char escape_;
+  bool has_header_;
+  common::ObString null_str_;
+  common::ObSEArray<ObFileColumnDef, 8, common::ModulePageAllocator, true> columns_;
+  // column alias list: read_csv(...) as t(a, b, c)
+  common::ObSEArray<common::ObString, 8, common::ModulePageAllocator, true> column_name_list_;
+  int64_t row_count_;
+  // file signature captured during schema inference, used to detect file change
+  int64_t file_size_;
+  int64_t file_mtime_sec_;
+  int64_t file_mtime_nsec_;
+  int64_t file_inode_;
+  TO_STRING_KV(K_(format), K_(path), K_(delimiter), K_(quote), K_(escape), K_(has_header),
+               K_(null_str), K_(columns), K_(column_name_list), K_(row_count), K_(file_size));
+};
+
 struct TableItem
 {
   TableItem()
@@ -153,6 +211,7 @@ struct TableItem
     ddl_schema_version_ = 0;
     ddl_table_id_ = common::OB_INVALID_ID;
     json_table_def_ = nullptr;
+    file_table_def_ = nullptr;
     table_type_ = MAX_TABLE_TYPE;
     values_table_def_ = NULL;
     sample_info_ = nullptr;
@@ -190,6 +249,7 @@ struct TableItem
     JSON_TABLE,
     VALUES_TABLE,
     LATERAL_TABLE,
+    FILE_TABLE,
   };
 
   /**
@@ -226,6 +286,7 @@ struct TableItem
   bool is_values_table() const { return VALUES_TABLE == type_; }//used to mark values statement: values row(1,2), row(3,4);
 
   bool is_lateral_table() const { return LATERAL_TABLE == type_; }
+  bool is_file_table() const { return FILE_TABLE == type_; }
   bool is_extended_all_or_user_sys_view() const
   {
     return (is_extended_sys_view_table(ref_id_) && (table_name_.prefix_match("USER_") || table_name_.prefix_match("ALL_")));
@@ -259,10 +320,12 @@ struct TableItem
   }
 
   ObJsonTableDef* get_json_table_def() { return json_table_def_; }
+  ObFileTableDef* get_file_table_def() { return file_table_def_; }
   int deep_copy_json_table_def(const ObJsonTableDef& jt_def, ObIRawExprCopier &expr_copier, ObIAllocator* allocator);
   int deep_copy_values_table_def(const ObValuesTableDef& table_def,
                                  ObIRawExprCopier &expr_copier,
                                  ObIAllocator* allocator);
+  int deep_copy_file_table_def(const ObFileTableDef& table_def, ObIAllocator* allocator);
   virtual bool has_for_update() const { return for_update_; }
   // if real table id, it is valid for all threads,
   // else if generated id, it is unique just during the thread session
@@ -303,6 +366,8 @@ struct TableItem
   ObJsonTableDef *json_table_def_;
   // values table
   ObValuesTableDef *values_table_def_;
+  // file table
+  ObFileTableDef *file_table_def_;
   // sample scan infos
   SampleInfo *sample_info_;
 };

@@ -44,7 +44,9 @@ public:
         escaped_cht_(),
         cs_type_(CS_TYPE_INVALID),
         is_overwrite_(false),
-        external_properties_()
+        external_properties_(),
+        is_copy_(false),
+        header_names_()
   {
   }
   virtual ~ObLogSelectInto() {}
@@ -108,6 +110,10 @@ public:
   {
     external_properties_.assign_ptr(external_properties.ptr(), external_properties.length());
   }
+  inline void set_is_copy(bool is_copy) { is_copy_ = is_copy; }
+  inline bool get_is_copy() const { return is_copy_; }
+  inline common::ObIArray<common::ObString> &get_header_names() { return header_names_; }
+  inline const common::ObIArray<common::ObString> &get_header_names() const { return header_names_; }
   inline ObItemType get_into_type() const
   {
     return into_type_;
@@ -188,6 +194,8 @@ private:
   common::ObCollationType cs_type_;
   bool is_overwrite_;
   common::ObString external_properties_;
+  bool is_copy_;
+  common::ObSEArray<common::ObString, 16, common::ModulePageAllocator, true> header_names_;
 };
 }
 }

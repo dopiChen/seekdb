@@ -102,6 +102,8 @@
 #include "sql/engine/expand/ob_expand_vec_op.h"
 #include "sql/optimizer/ob_log_values_table_access.h"
 #include "sql/engine/basic/ob_values_table_access_op.h"
+#include "sql/optimizer/ob_log_file_table_access.h"
+#include "sql/engine/basic/ob_file_table_access_op.h"
 
 namespace oceanbase
 {
@@ -1737,6 +1739,52 @@ int ObStaticEngineCG::generate_spec(ObLogValuesTableAccess &op,
       } else if (OB_FAIL(mark_expr_self_produced(op.get_output_exprs()))) {
       } else {
         spec.rows_ = table_def->row_cnt_;
+      }
+    }
+  }
+  return ret;
+}
+
+int ObStaticEngineCG::generate_spec(ObLogFileTableAccess &op,
+                                    ObFileTableAccessSpec &spec,
+                                    const bool in_root_job)
+{
+  int ret = OB_SUCCESS;
+  UNUSED(in_root_job);
+  const ObFileTableDef *table_def = NULL;
+  ObIAllocator &allocator = phy_plan_->get_allocator();
+  if (OB_ISNULL(table_def = op.get_file_table_def()) ||
+      OB_UNLIKELY(op.get_output_exprs().empty())) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (OB_FAIL(ob_write_string(allocator,
+                                     ObString(table_def->path_.length(), table_def->path_.ptr()),
+                                     spec.path_))) {
+  } else if (OB_FAIL(ob_write_string(allocator,
+                                     ObString(table_def->null_str_.length(), table_def->null_str_.ptr()),
+                                     spec.null_str_))) {
+  } else if (OB_FAIL(spec.column_exprs_.prepare_allocate(op.get_column_exprs().count()))) {
+  } else {
+    spec.format_ = table_def->format_;
+    spec.delimiter_ = table_def->delimiter_;
+    spec.quote_ = table_def->quote_;
+    spec.escape_ = table_def->escape_;
+    spec.has_header_ = table_def->has_header_;
+    spec.row_count_ = table_def->row_count_;
+    spec.file_size_ = table_def->file_size_;
+    spec.file_mtime_sec_ = table_def->file_mtime_sec_;
+    spec.file_mtime_nsec_ = table_def->file_mtime_nsec_;
+    spec.file_inode_ = table_def->file_inode_;
+    for (int64_t i = 0; OB_SUCC(ret) && i < op.get_column_exprs().count(); i++) {
+      ObColumnRefRawExpr *col_expr = op.get_column_exprs().at(i);
+      ObExpr *expr = NULL;
+      if (OB_ISNULL(col_expr)) {
+        ret = OB_ERR_UNEXPECTED;
+      } else if (OB_FAIL(mark_expr_self_produced(col_expr))) {
+      } else if (OB_FAIL(generate_rt_expr(*col_expr, expr))) {
+      } else if (OB_ISNULL(expr)) {
+        ret = OB_ERR_UNEXPECTED;
+      } else {
+        spec.column_exprs_.at(i) = expr;
       }
     }
   }
@@ -5460,6 +5508,7 @@ int ObStaticEngineCG::generate_spec(ObLogSelectInto &op, ObSelectIntoSpec &spec,
   } else if (OB_FAIL(spec.external_properties_.store_str(op.get_external_properties()))) {
   } else if (OB_FAIL(spec.user_vars_.init(op.get_user_vars().count()))) {
   } else if (OB_FAIL(spec.select_exprs_.init(op.get_select_exprs().count()))) {
+  } else if (OB_FAIL(spec.header_names_.init(op.get_header_names().count()))) {
   } else {
     ObString var;
     for (int64_t i = 0; OB_SUCC(ret) && i < op.get_user_vars().count(); ++i) {
@@ -5486,6 +5535,13 @@ int ObStaticEngineCG::generate_spec(ObLogSelectInto &op, ObSelectIntoSpec &spec,
       spec.cs_type_ = op.get_cs_type();
       spec.parallel_ = op.get_parallel();
       spec.is_overwrite_ = op.get_is_overwrite();
+      spec.is_copy_ = op.get_is_copy();
+      for (int64_t i = 0; OB_SUCC(ret) && i < op.get_header_names().count(); ++i) {
+        ObString header_name;
+        if (OB_FAIL(ob_write_string(alloc, op.get_header_names().at(i), header_name))) {
+        } else if (OB_FAIL(spec.header_names_.push_back(header_name))) {
+        }
+      }
       spec.plan_->need_drive_dml_query_ = true;
     }
   }
@@ -6149,6 +6205,10 @@ int ObStaticEngineCG::get_phy_op_type(ObLogicalOperator &log_op,
     }
     case log_op_def::LOG_VALUES_TABLE_ACCESS: {
       type = PHY_VALUES_TABLE_ACCESS;
+      break;
+    }
+    case log_op_def::LOG_FILE_TABLE_ACCESS: {
+      type = PHY_FILE_TABLE_ACCESS;
       break;
     }
     case log_op_def::LOG_EXPAND: {

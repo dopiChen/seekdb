@@ -1,69 +1,178 @@
-# owner: database-competition
-# owner group: SQL
-# description: Query local CSV, JSONL and Parquet files as database tables.
-# tags: sql,executor,file_sql
+#owner: oceanbase
+#owner group: oceanbase
+#
+# 赛题二：文件即数据库
+# read_csv / read_json / read_ndjson / read_parquet / glob / DESCRIBE / COPY
+#
+# 测试数据由 file_sql/include/init_file_sql.inc 部署到固定临时目录
+# /tmp/seekdb_file_sql_data，同时把 secure_file_priv 指到该目录并打开
+# enable_file_sql。固定路径保证 .result 中回显的路径与机器无关。
+#
+# 说明：mysqltest 只在 --eval 语句中展开 $VAR，因此所有引用
+# $FILE_SQL_DATA_DIR 的语句都写成单行 --eval 形式。
 
---source mysql_test/test_suite/file_sql/include/copy_file_sql_data.inc
+--source mysql_test/test_suite/file_sql/include/init_file_sql.inc
 
---disable_query_log
-let $FILE_SQL_DATA_DIR = $OBSERVER_DIR/data_for_mysqltest_file_sql;
+connection default;
 
---echo # enable_file_sql defaults to OFF
-select @@session.enable_file_sql AS default_enabled;
---disable_result_log
+#
+# 1. 功能开关：默认关闭，开启后可用
+#
+SET SESSION enable_file_sql = false;
 --error 1235
-eval select count(*) from read_csv('$FILE_SQL_DATA_DIR/basic.csv');
---enable_result_log
+--eval SELECT * FROM read_csv('$FILE_SQL_DATA_DIR/people.csv');
+SET SESSION enable_file_sql = true;
 
-set session enable_file_sql = ON;
+#
+# 2. secure_file_priv 以外的路径必须被拒绝
+#
+--error 9731
+SELECT * FROM read_csv('/etc/hostname');
+# 借助 .. 逃逸到 secure_file_priv 之外的已有文件必须被拒绝
+--error 9731
+--eval SELECT * FROM read_csv('$FILE_SQL_DATA_DIR/../../../../etc/passwd');
 
---echo # syntax and format validation
---disable_result_log
-eval select count(*) from read_csv('$FILE_SQL_DATA_DIR/basic.csv');
---error 1064
-eval select * from read_csv('$FILE_SQL_DATA_DIR/basic.csv', 'xml');
+#
+# 3. CSV：表头、类型推断、引号、转义、字段内换行、NULL
+#
+--eval SELECT COUNT(*), MIN(id), MAX(id), SUM(score), AVG(score) FROM read_csv('$FILE_SQL_DATA_DIR/people.csv');
+--eval SELECT id, name, dept FROM read_csv('$FILE_SQL_DATA_DIR/people.csv') WHERE id > 1 ORDER BY id DESC LIMIT 2;
+--eval SELECT id FROM read_csv('$FILE_SQL_DATA_DIR/people.csv') WHERE name = 'Alice, A';
+--eval SELECT id FROM read_csv('$FILE_SQL_DATA_DIR/people.csv') WHERE name = '张 三';
+--eval SELECT dept, COUNT(*), MIN(score), MAX(score) FROM read_csv('$FILE_SQL_DATA_DIR/people.csv') GROUP BY dept HAVING COUNT(*) > 0 ORDER BY dept;
+--eval SELECT COUNT(*) FROM read_csv('$FILE_SQL_DATA_DIR/people.csv') WHERE score IS NULL;
+--eval SELECT COUNT(*) FROM read_csv('$FILE_SQL_DATA_DIR/people.csv') WHERE note IS NOT NULL;
+--eval SELECT COUNT(*) FROM read_csv('$FILE_SQL_DATA_DIR/people.csv') WHERE birth IS NULL;
+
+#
+# 4. CSV 选项：delimiter / quote / escape / header / null
+#
+--eval SELECT COUNT(*) FROM read_csv('$FILE_SQL_DATA_DIR/people.csv', header = false);
+--eval SELECT id FROM read_csv('$FILE_SQL_DATA_DIR/extra.csv') ORDER BY id;
+--eval SELECT COUNT(*) FROM read_csv('$FILE_SQL_DATA_DIR/people.csv', delimiter = ',', quote = '"', escape = '"');
+# 自定义 NULL 标记：NA 视为 NULL，COUNT(val) 只统计非 NULL
+--eval SELECT COUNT(*), COUNT(val) FROM read_csv('$FILE_SQL_DATA_DIR/nulls.csv', null = 'NA');
+# header = false 与其它选项组合（布尔参数解析路径）
+--eval SELECT COUNT(*) FROM read_csv('$FILE_SQL_DATA_DIR/people.csv', header = false, null = 'NA');
+
+#
+# 5. JSONL：扁平对象、字段并集、缺失字段补 NULL
+#
+--eval SELECT COUNT(*), MIN(id), MAX(id) FROM read_json('$FILE_SQL_DATA_DIR/people.jsonl');
+--eval SELECT COUNT(*) FROM read_ndjson('$FILE_SQL_DATA_DIR/people.jsonl');
+--eval SELECT id, city FROM read_json('$FILE_SQL_DATA_DIR/people.jsonl') ORDER BY id;
+--eval SELECT COUNT(*) FROM read_json('$FILE_SQL_DATA_DIR/people.jsonl') WHERE city IS NULL AND id = 1;
+
+# 字段并集：第二行多出 extra，第三行缺少 name/score，缺失字段补 NULL
+--eval SELECT id, name, score FROM read_json('$FILE_SQL_DATA_DIR/people2.jsonl') ORDER BY id;
+# 类型冲突：同一列出现整数和字符串时按 VARCHAR 处理
+--eval SELECT id, v FROM read_json('$FILE_SQL_DATA_DIR/conflict.jsonl') ORDER BY id;
+# 嵌套对象必须被拒绝
 --error 1235
-eval select * from read_csv('$FILE_SQL_DATA_DIR/basic.csv', sample_size = 10);
---enable_result_log
+--eval SELECT * FROM read_json('$FILE_SQL_DATA_DIR/nested.jsonl');
+# 非法 JSON 行必须报错而不是崩溃
+--error 4070
+--eval SELECT * FROM read_json('$FILE_SQL_DATA_DIR/bad.jsonl');
+# 不支持的命名参数必须报错
+--error 1235
+--eval SELECT * FROM read_csv('$FILE_SQL_DATA_DIR/people.csv', bad_option = 1);
 
---echo # CSV scan, type conversion, duplicate headers and multiline quotes
-eval select id, name, score, active, day, created,
-            replace(note, char(10), '<NL>') AS note, id__2
-       from read_csv('$FILE_SQL_DATA_DIR/basic.csv') f
-      order by id;
-eval select count(*) AS row_count, sum(id) AS id_sum,
-            round(avg(score), 2) AS score_avg, sum(active) AS active_count
-       from read_csv('$FILE_SQL_DATA_DIR/basic.csv', header = true, sample_size = -1) f;
+#
+# 6. glob：只发现文件，返回一列 file
+#
+--eval SELECT COUNT(*) FROM glob('$FILE_SQL_DATA_DIR/*.csv');
+--eval SELECT COUNT(*) FROM glob('$FILE_SQL_DATA_DIR/*.jsonl');
 
---echo # JSONL union schema and missing fields
-eval select id, name, score, active, day, note
-       from read_json('$FILE_SQL_DATA_DIR/basic.jsonl', format = 'newline_delimited') f
-      order by id;
+#
+# 6.5 Parquet：Footer Schema、多 Row Group、可空列、基础类型、列裁剪
+#
+--eval SELECT COUNT(*), MIN(id), MAX(id), SUM(id) FROM read_parquet('$FILE_SQL_DATA_DIR/p_plain.parquet');
+--eval SELECT COUNT(*), MIN(id), MAX(id) FROM read_parquet('$FILE_SQL_DATA_DIR/p_snappy.parquet');
+--eval SELECT COUNT(*), MIN(id), MAX(id) FROM read_parquet('$FILE_SQL_DATA_DIR/p_dict.parquet');
+# 三个文件内容一致：多 Row Group / Snappy / 字典编码 + DataPageV2 结果相同
+--eval SELECT COUNT(*) FROM read_parquet('$FILE_SQL_DATA_DIR/p_plain.parquet') a INNER JOIN read_parquet('$FILE_SQL_DATA_DIR/p_snappy.parquet') b ON a.id = b.id AND a.name = b.name;
+# 列裁剪：只读 name 列
+--eval SELECT name FROM read_parquet('$FILE_SQL_DATA_DIR/p_snappy.parquet') WHERE id = 3;
+# 可空列
+--eval SELECT COUNT(*) FROM read_parquet('$FILE_SQL_DATA_DIR/p_snappy.parquet') WHERE score IS NULL;
+--eval SELECT COUNT(*) FROM read_parquet('$FILE_SQL_DATA_DIR/p_snappy.parquet') WHERE active IS NOT NULL;
+# 基础类型
+--eval SELECT id, birth, active FROM read_parquet('$FILE_SQL_DATA_DIR/p_snappy.parquet') WHERE id = 2;
+# 跨格式 JOIN：Parquet + CSV
+--eval SELECT p.id, p.name, c.city FROM read_parquet('$FILE_SQL_DATA_DIR/p_snappy.parquet') p LEFT JOIN read_csv('$FILE_SQL_DATA_DIR/extra.csv') c ON p.id = c.id WHERE p.id <= 2 ORDER BY p.id;
+--eval DESCRIBE SELECT * FROM read_parquet('$FILE_SQL_DATA_DIR/p_snappy.parquet');
 
---echo # inferred CSV schema using DuckDB DESCRIBE syntax
-eval describe select * from read_csv('$FILE_SQL_DATA_DIR/basic.csv');
+#
+# 7. DESCRIBE：动态列元数据
+#
+--eval DESCRIBE SELECT * FROM read_csv('$FILE_SQL_DATA_DIR/people.csv');
+--eval DESCRIBE SELECT * FROM read_json('$FILE_SQL_DATA_DIR/people.jsonl');
+--eval DESCRIBE SELECT * FROM glob('$FILE_SQL_DATA_DIR/*.csv');
 
---echo # Parquet scan and aggregate push through projected columns
-eval select count(*) AS row_count, min(c1) AS min_c1,
-            max(c1) AS max_c1, sum(c1) AS sum_c1
-       from read_parquet('$FILE_SQL_DATA_DIR/simple.parquet') p;
+#
+# 7.5 确定性类型推断：DATE / DATETIME / 全 NULL 列 / 边界值
+#
+--eval SELECT d, dt, txt, allnull FROM read_csv('$FILE_SQL_DATA_DIR/types.csv') ORDER BY d DESC;
+--eval DESCRIBE SELECT * FROM read_csv('$FILE_SQL_DATA_DIR/types.csv');
 
---echo # DuckDB glob returns one file column
-eval select substring_index(file, '/', -1) AS file
-       from glob('$FILE_SQL_DATA_DIR/*')
-      order by file;
+#
+# 8. 单文件 SQL：表达式、别名、WHERE / ORDER BY / LIMIT / GROUP BY / HAVING / 聚合
+#
+--eval SELECT id AS k, UPPER(dept) AS d, score * 2 AS s2 FROM read_csv('$FILE_SQL_DATA_DIR/people.csv') WHERE score IS NOT NULL ORDER BY s2 DESC LIMIT 1;
+--eval SELECT COUNT(*) AS c, SUM(score) AS s, MIN(score) AS mn, MAX(score) AS mx, AVG(score) AS av FROM read_csv('$FILE_SQL_DATA_DIR/people.csv');
 
---echo # COPY query to CSV and read it back
-eval copy (select id, name, score
-             from read_csv('$FILE_SQL_DATA_DIR/basic.csv')
-            order by id)
-       to '$FILE_SQL_DATA_DIR/export.csv'
-       (format csv, header, nullstr 'NULL');
-eval select id, name, score
-       from read_csv('$FILE_SQL_DATA_DIR/export.csv')
-      order by id;
+#
+# 9. 双文件 JOIN（CSV + CSV，跨文件）
+#
+--eval SELECT a.id, a.name, b.city FROM read_csv('$FILE_SQL_DATA_DIR/people.csv') a LEFT JOIN read_csv('$FILE_SQL_DATA_DIR/extra.csv') b ON a.id = b.id ORDER BY a.id;
+--eval SELECT COUNT(*) FROM read_csv('$FILE_SQL_DATA_DIR/people.csv') a INNER JOIN read_csv('$FILE_SQL_DATA_DIR/extra.csv') b ON a.id = b.id;
 
-set session enable_file_sql = OFF;
---enable_query_log
+#
+# 10. COPY ... TO：表头、分隔符、引号、转义、NULL 文本，导出后可被 read_csv 读回
+#     注意：--eval 会处理反斜杠，测试文件里的 '\\\\' 展开为 SQL 中的 '\\'（一个反斜杠）
+#
+--eval COPY read_csv('$FILE_SQL_DATA_DIR/people.csv') TO '$FILE_SQL_DATA_DIR/copy_basic.csv' (FORMAT CSV, HEADER, DELIMITER ',', QUOTE '"', ESCAPE '\\\\', NULL 'NULL');
+--eval SELECT COUNT(*), MIN(id), MAX(id), SUM(score) FROM read_csv('$FILE_SQL_DATA_DIR/copy_basic.csv', escape = '\\\\', null = 'NULL');
+--eval SELECT id, name FROM read_csv('$FILE_SQL_DATA_DIR/copy_basic.csv', escape = '\\\\', null = 'NULL') ORDER BY id;
 
---source mysql_test/test_suite/file_sql/include/remove_file_sql_data.inc
+--eval COPY (SELECT id, name, score FROM read_csv('$FILE_SQL_DATA_DIR/people.csv') WHERE id > 1 ORDER BY id) TO '$FILE_SQL_DATA_DIR/copy_query.csv' WITH (FORMAT CSV, HEADER, NULL 'NULL');
+--eval SELECT COUNT(*), MIN(id), MAX(id) FROM read_csv('$FILE_SQL_DATA_DIR/copy_query.csv', null = 'NULL');
+
+# 未指定 NULL 文本时，NULL 输出为空字段，导出文件可被 read_csv 原样读回
+--eval COPY (SELECT id, name, score FROM read_csv('$FILE_SQL_DATA_DIR/people.csv')) TO '$FILE_SQL_DATA_DIR/copy_null_default.csv' (FORMAT CSV, HEADER);
+--eval SELECT COUNT(*), COUNT(score), MIN(id), MAX(id) FROM read_csv('$FILE_SQL_DATA_DIR/copy_null_default.csv');
+--eval SELECT id, name, score FROM read_csv('$FILE_SQL_DATA_DIR/copy_null_default.csv') ORDER BY id;
+
+# 默认格式为 CSV：默认不写表头
+--eval COPY read_csv('$FILE_SQL_DATA_DIR/extra.csv') TO '$FILE_SQL_DATA_DIR/copy_default.csv';
+--eval SELECT COUNT(*) FROM read_csv('$FILE_SQL_DATA_DIR/copy_default.csv', header = false);
+
+# 目标已存在时必须失败
+--error 9101
+--eval COPY read_csv('$FILE_SQL_DATA_DIR/extra.csv') TO '$FILE_SQL_DATA_DIR/copy_default.csv';
+
+# 查询在运行时失败时不能留下目标文件或临时文件
+--error 1242
+--eval COPY (SELECT (SELECT id FROM read_csv('$FILE_SQL_DATA_DIR/people.csv')) AS x) TO '$FILE_SQL_DATA_DIR/copy_failed.csv';
+--eval SELECT COUNT(*) FROM glob('$FILE_SQL_DATA_DIR/copy_failed.csv*');
+
+#
+# 11. COPY 真实表，并读回
+#
+--disable_warnings
+DROP TABLE IF EXISTS file_sql_copy_t;
+CREATE TABLE file_sql_copy_t (id INT PRIMARY KEY, name VARCHAR(20), score DOUBLE);
+INSERT INTO file_sql_copy_t VALUES (1, 'Alice, A', 90.5), (2, 'Bob', NULL), (3, '张三', 77.25);
+--enable_warnings
+--eval COPY file_sql_copy_t TO '$FILE_SQL_DATA_DIR/copy_table.csv' (FORMAT CSV, HEADER, NULL 'NULL');
+--eval SELECT COUNT(*), MIN(id), MAX(id) FROM read_csv('$FILE_SQL_DATA_DIR/copy_table.csv', null = 'NULL');
+--eval SELECT id, name, score FROM read_csv('$FILE_SQL_DATA_DIR/copy_table.csv', null = 'NULL') ORDER BY id;
+DROP TABLE file_sql_copy_t;
+
+#
+# 12. 普通 SELECT ... INTO OUTFILE 不受影响
+#
+--eval SELECT id, city FROM read_csv('$FILE_SQL_DATA_DIR/extra.csv') ORDER BY id INTO OUTFILE '$FILE_SQL_DATA_DIR/select_into.csv' FIELDS TERMINATED BY ',';
+--eval SELECT COUNT(*) FROM read_csv('$FILE_SQL_DATA_DIR/select_into.csv', header = false);
+
+--source mysql_test/test_suite/file_sql/include/cleanup_file_sql.inc

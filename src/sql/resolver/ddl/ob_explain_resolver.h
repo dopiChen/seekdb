@@ -33,6 +33,10 @@ namespace sql
     virtual ~ObExplainResolver() {}
     virtual int resolve(const ParseNode &parse_tree);
     ObExplainStmt *get_explain_stmt();
+    // DESCRIBE SELECT * FROM read_xxx(...) returns the dynamic column metadata
+    // of the file table instead of the query plan.
+    int build_file_table_describe_stmt(ObStmt &child_stmt, ObStmt *&desc_stmt);
+    bool is_file_table_select(ObStmt &child_stmt);
     int resolve_columns(ObRawExpr *&expr, common::ObArray<ObQualifiedName> &columns)
     {
       UNUSED(expr);
