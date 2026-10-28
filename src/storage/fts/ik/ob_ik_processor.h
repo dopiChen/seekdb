@@ -77,6 +77,7 @@ private:
   int prepare_next_char();
 
   ObCollationType coll_type_;
+  ObCharsetType cs_type_;
   const char *fulltext_;
   int64_t fulltext_len_;
 
@@ -102,6 +103,13 @@ public:
   virtual ~ObIIKProcessor() {}
 
   int process(TokenizeContext &ctx);
+
+  // Hot path variant: the caller already holds the current character, its
+  // length and its type, so do not read them from the context again.
+  int process(TokenizeContext &ctx,
+              const char *ch,
+              const uint8_t char_len,
+              const ObFTCharUtil::CharType type);
 
   virtual int do_process(TokenizeContext &ctx,
                          const char *ch,

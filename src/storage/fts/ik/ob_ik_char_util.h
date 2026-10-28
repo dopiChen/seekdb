@@ -52,6 +52,13 @@ public:
                                  const uint8_t char_len,
                                  CharType &type);
 
+  // Same as classify_first_char but reuses an already resolved charset type so
+  // that hot loops do not have to look it up from the collation every time.
+  static int classify_char(ObCharsetType cs_type,
+                           const char *input,
+                           const uint8_t char_len,
+                           CharType &type);
+
   static int check_cn_number(ObCollationType coll_type,
                              const char *input,
                              const uint8_t char_len,
@@ -445,38 +452,35 @@ template <ObCharsetType CS_TYPE>
 inline int ObFTCharUtil::do_classify(const char *input, const uint8_t char_len, CharType &type)
 {
   int ret = OB_SUCCESS;
-  bool checker = false;
+  ob_wc_t unicode = 0;
+  constexpr bool IS_UTF16 = (CS_TYPE == CHARSET_UTF16 || CS_TYPE == CHARSET_UTF16LE);
   type = CharType::USELESS;
 
-  if (OB_FAIL(is_alpha<CS_TYPE>(input, char_len, checker))) {
-  } else if (checker) {
+  // Decode the unicode code point only once and then run the pure predicates on
+  // it. Previously every predicate decoded the very same character again.
+  if (OB_FAIL(decode_unicode<CS_TYPE>(input, char_len, unicode))) {
+  } else if (ObUnicodeBlockUtils::is_alpha(unicode)) {
     type = CharType::ENGLISH_LETTER;
-  } else if (OB_FAIL(is_arabic<CS_TYPE>(input, char_len, checker))) {
-  } else if (checker) {
+  } else if (ObUnicodeBlockUtils::is_arabic(unicode)) {
     type = CharType::ARABIC_LETTER;
-  } else if (OB_FAIL(is_chinese<CS_TYPE>(input, char_len, checker))) {
-  } else if (checker) {
+  } else if (ObUnicodeBlockUtils::is_chinese(unicode)) {
     type = CharType::CHINESE;
-  } else if (OB_FAIL(is_other_cjk<CS_TYPE>(input, char_len, checker))) {
-  } else if (checker) {
+  } else if (ObUnicodeBlockUtils::is_other_cjk(unicode)) {
     type = CharType::OTHER_CJK;
-  } else if (OB_FAIL(is_surrogate_high<CS_TYPE>(input, char_len, checker))) {
-  } else if (checker) {
+  } else if (IS_UTF16 && ObUnicodeBlockUtils::check_high_surrogate(unicode)) {
     type = CharType::SURROGATE_HIGH;
-  } else if (OB_FAIL(is_surrogate_low<CS_TYPE>(input, char_len, checker))) {
-  } else if (checker) {
+  } else if (IS_UTF16 && ObUnicodeBlockUtils::check_low_surrogate(unicode)) {
     type = CharType::SURROGATE_LOW;
   }
   return ret;
 }
 
-inline int ObFTCharUtil::classify_first_char(ObCollationType coll_type,
-                                             const char *input,
-                                             const uint8_t char_len,
-                                             CharType &type)
+inline int ObFTCharUtil::classify_char(ObCharsetType cs_type,
+                                       const char *input,
+                                       const uint8_t char_len,
+                                       CharType &type)
 {
   int ret = OB_SUCCESS;
-  ObCharsetType cs_type = ObCharset::charset_type_by_coll(coll_type);
 
   switch (cs_type) {
   case CHARSET_UTF8MB4: {
@@ -497,6 +501,14 @@ inline int ObFTCharUtil::classify_first_char(ObCollationType coll_type,
     break;
   }
   return ret;
+}
+
+inline int ObFTCharUtil::classify_first_char(ObCollationType coll_type,
+                                             const char *input,
+                                             const uint8_t char_len,
+                                             CharType &type)
+{
+  return classify_char(ObCharset::charset_type_by_coll(coll_type), input, char_len, type);
 }
 
 } // namespace storage
