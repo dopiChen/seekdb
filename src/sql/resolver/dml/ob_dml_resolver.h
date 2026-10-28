@@ -543,6 +543,7 @@ protected:
   int resolve_not_null_date_column_is_null(ObRawExpr *&expr, const ObRawExprResType* col_type);
   int resolve_partition_expr(const ParseNode &part_expr_node, ObRawExpr *&expr, common::ObIArray<ObQualifiedName> &columns);
 
+  int check_ai_column_strict_read(const ObColumnRefRawExpr &col);
   void report_user_error_msg(int &ret, const ObRawExpr *root_expr, const ObQualifiedName &q_name) const;
   bool is_need_add_additional_function(const ObRawExpr *expr);
   int add_additional_function_according_to_type(const ColumnItem *column,

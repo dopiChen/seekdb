@@ -353,6 +353,9 @@ public:
    virtual ~ObAIFuncModel() {}
    // completion
    int call_completion(ObString &prompt, ObJsonObject *config, ObString &result);
+   // completion with a system message (used by AI COLUMN type prompts)
+   int call_completion_with_system(ObString &system_prompt, ObString &prompt, ObJsonObject *config,
+                                   ObString &result);
    int call_completion_vector(ObArray<ObString> &prompts, ObJsonObject *config, ObArray<ObString> &results);
    // dense_embedding
    int call_dense_embedding(ObString &content, ObJsonObject *config, ObString &result);
@@ -382,6 +385,8 @@ public:
   static constexpr char prompt_template_key[20] = "template";
   static constexpr char prompt_args_key[20] = "args";
 private:
+  static int expand_prompt_object(ObIAllocator &allocator, ObJsonObject *prompt_object,
+                                 ObString &replaced_prompt_str, int64_t depth);
   DISALLOW_COPY_AND_ASSIGN(ObAIFuncPromptObjectUtils);
 };
 

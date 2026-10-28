@@ -47,6 +47,11 @@ public:
   static int do_handle(ObTableModifyOp &op,
                        const ObDMLBaseCtDef &dml_ctdef,
                        ObDMLBaseRtDef &dml_rtdef);
+  // shared with AI column task maintenance
+  static int gen_where(ObEvalCtx &eval_ctx, char *&buf, int64_t &len, int64_t &pos,
+                       const common::ObIArray<ObForeignKeyColumn> &columns,
+                       const ObExprPtrIArray &row, common::ObIAllocator &alloc,
+                       const common::ObObjPrintParams &print_params);
   
 private:
   static int value_changed(ObTableModifyOp &op,
@@ -79,10 +84,6 @@ private:
                      const common::ObIArray<ObForeignKeyColumn> &columns,
                      const ObExprPtrIArray &row, common::ObIAllocator &alloc,
                      const common::ObObjPrintParams &print_params);
-  static int gen_where(ObEvalCtx &eval_ctx, char *&buf, int64_t &len, int64_t &pos,
-                       const common::ObIArray<ObForeignKeyColumn> &columns,
-                       const ObExprPtrIArray &row, common::ObIAllocator &alloc,
-                       const common::ObObjPrintParams &print_params);
   static int gen_column_value(ObEvalCtx &ctx, char *&buf, int64_t &len, int64_t &pos,
                               const common::ObIArray<ObForeignKeyColumn> &columns,
                               const ObExprPtrIArray &row, const char *delimiter,
@@ -238,7 +239,7 @@ public:
   bool has_before_row_trigger(const ObDMLBaseCtDef &dml_ctdef) { return dml_ctdef.is_primary_index_ && dml_ctdef.trig_ctdef_.all_tm_points_.has_before_row(); }
   bool has_after_row_trigger(const ObDMLBaseCtDef &dml_ctdef) { return dml_ctdef.is_primary_index_ && dml_ctdef.trig_ctdef_.all_tm_points_.has_after_row(); }
   bool need_foreign_key_check(const ObDMLBaseCtDef &dml_ctdef) { return dml_ctdef.is_primary_index_ && dml_ctdef.fk_args_.count() > 0; }
-  bool need_after_row_process(const ObDMLBaseCtDef &dml_ctdef) { return need_foreign_key_check(dml_ctdef) || has_after_row_trigger(dml_ctdef); }
+  bool need_after_row_process(const ObDMLBaseCtDef &dml_ctdef) { return need_foreign_key_check(dml_ctdef) || has_after_row_trigger(dml_ctdef) || (dml_ctdef.is_primary_index_ && dml_ctdef.ai_arg_.is_valid()); }
   void set_execute_single_row() { execute_single_row_ = true; }
   void unset_execute_single_row() { execute_single_row_ = false; }
   bool get_execute_single_row() const { return execute_single_row_; }

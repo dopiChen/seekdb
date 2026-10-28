@@ -80,6 +80,7 @@ int ObServer::get_lower_bound_freeze_info(const int64_t snapshot_version, share:
 #include "storage/ob_file_system_router.h"
 #include "sql/optimizer/stat/ob_opt_stat_manager.h" // for ObOptStatManager
 #include "sql/ob_query_retry_ctrl.h"
+#include "sql/engine/dml/ob_ai_column_worker.h"
 #include "data_plane/scheduler/ob_sys_task_stat.h"
 #include "share/longops_mgr/ob_longops_mgr.h"
 #include "share/ob_ddl_sim_point.h"
@@ -856,6 +857,8 @@ int ObServer::init(const ObServerOptions &opts, const ObPLogWriterCfg &log_cfg)
       LOG_ERROR("set sys task status self addr failed", KR(ret));
     } else if (OB_FAIL(ObTimerMonitor::get_instance().init())) {
       LOG_ERROR("init timer monitor failed", KR(ret));
+    } else if (OB_FAIL(sql::ObAIColumnWorker::get_instance().init())) {
+      LOG_ERROR("init AI column worker failed", KR(ret));
     } else if (OB_FAIL(PX_P2P_DH.init())) {
       LOG_ERROR("init px p2p datahub failed", KR(ret));
     } else if (OB_FAIL(init_px_target_mgr())) {
@@ -1283,6 +1286,10 @@ int ObServer::start()
       FLOG_INFO("success to start timer monitor");
     }
 
+    if (FAILEDx(sql::ObAIColumnWorker::get_instance().start())) {
+      LOG_ERROR("fail to start AI column worker", KR(ret));
+    }
+
     if (OB_SUCC(ret)) {
       FLOG_INFO("[OBSERVER_NOTICE] server instance start succeed");
       LOG_DBA_INFO_V2(OB_SERVER_INSTANCE_START_SUCCESS,
@@ -1596,6 +1603,10 @@ int ObServer::stop()
     FLOG_INFO("begin to stop storage object mgr");
     OB_STORAGE_OBJECT_MGR.stop();
     FLOG_INFO("storage object mgr stopped");
+
+    FLOG_INFO("begin to stop AI column worker");
+    sql::ObAIColumnWorker::get_instance().stop();
+    sql::ObAIColumnWorker::get_instance().wait();
 
     FLOG_INFO("begin to stop timer monitor");
     ObTimerMonitor::get_instance().stop();

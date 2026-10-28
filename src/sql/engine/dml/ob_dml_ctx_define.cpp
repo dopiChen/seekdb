@@ -201,7 +201,13 @@ OB_SERIALIZE_MEMBER(ObDMLBaseCtDef,
                     is_table_without_pk_, // FARM COMPAT WHITELIST, renamed
                     reserved_advanced_trigger_,
                     trans_info_expr_,
-                    is_vec_hnsw_index_vid_opt_);
+                    is_vec_hnsw_index_vid_opt_,
+                    ai_arg_);
+
+OB_SERIALIZE_MEMBER(ObAIColumnDmlCol, column_id_, result_idx_, state_idx_, req_idx_, version_, is_vector_,
+                    dep_begin_, dep_cnt_);
+
+OB_SERIALIZE_MEMBER(ObAIColumnDmlArg, table_id_, cols_, pk_cols_, dep_idxs_);
 
 OB_SERIALIZE_MEMBER(ObMultiInsCtDef,
                     calc_part_id_expr_,

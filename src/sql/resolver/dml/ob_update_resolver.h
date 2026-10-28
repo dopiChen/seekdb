@@ -45,6 +45,9 @@ public:
   virtual int resolve(const ParseNode &parse_tree);
   inline ObUpdateStmt *get_update_stmt() { return static_cast<ObUpdateStmt*>(stmt_); }
 private:
+  // AI COLUMN: reject assignments of AI columns, invalidate AI columns whose
+  // input or primary key is assigned (see ObAIColumnDmlHandle)
+  int add_ai_column_assignments(common::ObIArray<ObTableAssignment> &tables_assign);
   int resolve_table_list(const ParseNode &parse_tree);
   int generate_update_table_info(ObTableAssignment &table_assign);
   int check_multi_update_table_conflict();

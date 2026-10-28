@@ -19,6 +19,7 @@
 #include "sql/resolver/dml/ob_default_value_utils.h"
 #include "sql/resolver/dml/ob_update_stmt.h"
 #include "sql/resolver/dml/ob_insert_stmt.h"
+#include "sql/resolver/ddl/ob_ai_column_util.h"
 #include "sql/rewrite/ob_transform_utils.h"
 #include "sql/pl/ob_pl_resolver.h"
 #include "sql/parser/parse_malloc.h"
@@ -475,6 +476,27 @@ int ObDelUpdResolver::check_update_vector_col_with_vector_index(const ObTableSch
       // check if has extra_info, update with row key should also update vid
       if (has_exist_in_array(row_key_col_ids, as.column_expr_->get_column_id())) {
         update_with_vector_index = true;
+      }
+    }
+  }
+  // AI result assignments are added after cascading assignments. Account for
+  // their invalidation now, so a source-column update also regenerates the VID
+  // and removes the old vector index entry in the business transaction.
+  if (OB_SUCC(ret) && !update_with_vector_index && ObAIColumnUtil::has_ai_column(*table_schema)) {
+    ObArenaAllocator allocator("AIColVecUpd");
+    ObSEArray<ObAIColumnDef, 4> defs;
+    if (OB_FAIL(ObAIColumnUtil::get_ai_columns(*table_schema, allocator, defs))) {
+    }
+    for (int64_t i = 0; OB_SUCC(ret) && !update_with_vector_index && i < defs.count(); ++i) {
+      const ObAIColumnDef &def = defs.at(i);
+      bool invalidated = false;
+      for (int64_t j = 0; AI_COLUMN_FUNC_EMBED == def.func_ && !invalidated && j < assigns.count(); ++j) {
+        const ObColumnRefRawExpr *column = assigns.at(j).column_expr_;
+        invalidated = def.depends_on(column->get_column_name())
+                      || has_exist_in_array(row_key_col_ids, column->get_column_id());
+      }
+      if (invalidated && OB_FAIL(ObVectorIndexUtil::check_column_has_vector_index(
+          *table_schema, *schema_guard, def.column_id_, update_with_vector_index, index_type))) {
       }
     }
   }

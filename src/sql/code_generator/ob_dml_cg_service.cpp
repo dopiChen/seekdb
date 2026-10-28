@@ -17,6 +17,7 @@
 #define USING_LOG_PREFIX SQL_CG
 #include "ob_dml_cg_service.h"
 #include "sql/code_generator/ob_static_engine_cg.h"
+#include "sql/resolver/ddl/ob_ai_column_util.h"
 #include "sql/engine/ob_physical_plan.h"
 #include "sql/parser/ob_parser.h"
 #include "sql/optimizer/ob_log_for_update.h"
@@ -2155,6 +2156,10 @@ int ObDmlCgService::generate_dml_base_ctdef(ObLogDelUpd &op,
     if (OB_FAIL(convert_foreign_keys(op, index_dml_info, dml_base_ctdef))) {
     }
   }
+  if (OB_SUCC(ret) && index_dml_info.is_primary_index_) {
+    if (OB_FAIL(convert_ai_columns(op, index_dml_info, dml_base_ctdef))) {
+    }
+  }
   // Only enable when pl_static_engine is enabled that mysqltest will enable
   if (OB_SUCC(ret) && index_dml_info.is_primary_index_) {
     //add trigger
@@ -2934,6 +2939,92 @@ int ObDmlCgService::generate_fk_scan_ctdef(share::schema::ObSchemaGetterGuard &s
   return ret;
 }
 
+
+int ObDmlCgService::convert_ai_columns(ObLogDelUpd &op,
+                                       const IndexDMLInfo &index_dml_info,
+                                       ObDMLBaseCtDef &dml_ctdef)
+{
+  int ret = OB_SUCCESS;
+  ObLogPlan *log_plan = NULL;
+  ObSqlSchemaGuard *schema_guard = NULL;
+  const ObTableSchema *table_schema = NULL;
+  if (OB_ISNULL(log_plan = op.get_plan()) || OB_ISNULL(cg_.phy_plan_) ||
+      OB_ISNULL(schema_guard = log_plan->get_optimizer_context().get_sql_schema_guard())) {
+    ret = OB_INVALID_ARGUMENT;
+  } else if (OB_FAIL(schema_guard->get_table_schema(index_dml_info.ref_table_id_, table_schema))) {
+  } else if (OB_ISNULL(table_schema)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (!table_schema->is_user_table() || !ObAIColumnUtil::has_ai_column(*table_schema)) {
+    // no AI column
+  } else {
+    ObArenaAllocator tmp_alloc("AIColCg");
+    ObSEArray<ObAIColumnDef, 4> defs;
+    ObSEArray<uint64_t, 16> column_ids;
+    ObSEArray<uint64_t, 4> rowkey_ids;
+    ObAIColumnDmlArg &arg = dml_ctdef.ai_arg_;
+    ObIAllocator &alloc = cg_.phy_plan_->get_allocator();
+    int64_t dep_total = 0;
+    bool layout_ok = true;
+    if (OB_FAIL(ObAIColumnUtil::get_ai_columns(*table_schema, tmp_alloc, defs))) {
+    } else if (OB_FAIL(generate_dml_column_ids(op, index_dml_info.column_exprs_, column_ids))) {
+    } else if (OB_FAIL(table_schema->get_rowkey_info().get_column_ids(rowkey_ids))) {
+    } else if (OB_FAIL(arg.cols_.init(defs.count()))) {
+    } else if (OB_FAIL(arg.pk_cols_.init(rowkey_ids.count()))) {
+    } else {
+      for (int64_t i = 0; i < defs.count(); ++i) {
+        dep_total += defs.at(i).deps_.count();
+      }
+      ret = arg.dep_idxs_.init(dep_total);
+    }
+    for (int64_t i = 0; OB_SUCC(ret) && layout_ok && i < rowkey_ids.count(); ++i) {
+      ObForeignKeyColumn pk_col;
+      const ObColumnSchemaV2 *col_schema = table_schema->get_column_schema(rowkey_ids.at(i));
+      if (OB_ISNULL(col_schema)) {
+        ret = OB_ERR_UNEXPECTED;
+      } else if (!var_exist_in_array(column_ids, rowkey_ids.at(i), pk_col.idx_)) {
+        layout_ok = false;
+      } else if (OB_FAIL(deep_copy_ob_string(alloc, col_schema->get_column_name_str(), pk_col.name_))) {
+      } else {
+        pk_col.obj_meta_ = col_schema->get_meta_type();
+        ret = arg.pk_cols_.push_back(pk_col);
+      }
+    }
+    const bool is_delete = (DAS_OP_TABLE_DELETE == dml_ctdef.dml_type_);
+    for (int64_t i = 0; OB_SUCC(ret) && layout_ok && i < defs.count(); ++i) {
+      const ObAIColumnDef &def = defs.at(i);
+      ObAIColumnDmlCol col;
+      col.column_id_ = def.column_id_;
+      col.version_ = def.version_;
+      col.is_vector_ = (AI_COLUMN_FUNC_EMBED == def.func_);
+      col.dep_begin_ = static_cast<int32_t>(arg.dep_idxs_.count());
+      if ((!var_exist_in_array(column_ids, def.column_id_, col.result_idx_)
+           || !var_exist_in_array(column_ids, def.state_column_id_, col.state_idx_)
+           || !var_exist_in_array(column_ids, def.request_column_id_, col.req_idx_)) && !is_delete) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("AI column is not part of the DML row", K(ret), K(def), K(column_ids));
+      }
+      for (int64_t d = 0; OB_SUCC(ret) && d < def.deps_.count(); ++d) {
+        const ObColumnSchemaV2 *dep_schema = table_schema->get_column_schema(def.deps_.at(d));
+        int32_t idx = -1;
+        if (OB_NOT_NULL(dep_schema) && var_exist_in_array(column_ids, dep_schema->get_column_id(), idx)) {
+          ret = arg.dep_idxs_.push_back(idx);
+        }
+      }
+      if (OB_SUCC(ret)) {
+        col.dep_cnt_ = static_cast<int32_t>(arg.dep_idxs_.count() - col.dep_begin_);
+        ret = arg.cols_.push_back(col);
+      }
+    }
+    if (OB_SUCC(ret) && layout_ok) {
+      arg.table_id_ = table_schema->get_table_id();
+      cg_.phy_plan_->set_has_nested_sql(true);
+    } else if (OB_SUCC(ret)) {
+      arg.cols_.reset();
+      LOG_WARN("skip AI column maintenance, primary key is not part of the DML row", K(column_ids));
+    }
+  }
+  return ret;
+}
 
 int ObDmlCgService::convert_foreign_keys(ObLogDelUpd &op,
                                          const IndexDMLInfo &index_dml_info,

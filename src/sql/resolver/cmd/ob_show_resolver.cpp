@@ -395,7 +395,19 @@ int ObShowResolver::resolve(const ParseNode &parse_tree)
                */
               bool is_full = (1 == ((parse_tree.children_[0]->value_)&1));
               bool is_extended = (1 == (((parse_tree.children_[0]->value_)>>1)&1));
-              if (OB_UNLIKELY(((parse_tree.children_[0]->value_)>>2) != 0)) {
+              if (4 == parse_tree.children_[0]->value_) {
+                // 复用 SHOW 的表解析和权限检查，返回该表的 AI 定义。
+                ObSqlString ai_columns_sql;
+                show_resv_ctx.like_column_ = ObString("Field");
+                if (OB_FAIL(ai_columns_sql.append_fmt(
+                    "SELECT column_name AS Field, normalized_expr AS Expression, "
+                    "dependency_columns AS Dependencies, result_type AS Type, "
+                    "sync_mode AS Sync_mode, max_retries AS Max_retries, "
+                    "definition_version AS Definition_version FROM oceanbase.__all_ai_column "
+                    "WHERE table_id = %lu ORDER BY column_id", show_table_id))) {
+                } else if (OB_FAIL(ob_write_string(*allocator_, ai_columns_sql.string(), select_sql))) {
+                }
+              } else if (OB_UNLIKELY(((parse_tree.children_[0]->value_)>>2) != 0)) {
                 ret = OB_ERR_UNEXPECTED;
               } else if (is_full) {
                 if (is_extended) {

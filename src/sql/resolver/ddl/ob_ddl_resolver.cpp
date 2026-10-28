@@ -2286,6 +2286,20 @@ int ObDDLResolver::resolve_normal_column_attribute(ObColumnSchemaV2 &column,
       {
         break;
       }
+      case T_AI_COLUMN_SPEC: {
+        // AI COLUMN (AI_COMPLETE/AI_EMBED(...)) WITH (...): the result column is
+        // nullable, the hidden state/request/spec columns are added later
+        ObAIColumnDef def;
+        if (OB_ISNULL(allocator_)) {
+          ret = OB_ERR_UNEXPECTED;
+        } else if (OB_FAIL(ObAIColumnUtil::resolve_spec(*attr_node, column, *allocator_, def))) {
+          SQL_RESV_LOG(WARN, "invalid AI COLUMN definition", K(ret));
+        } else if (OB_FAIL(ai_column_defs_.push_back(def))) {
+        } else {
+          column.set_nullable(true);
+        }
+        break;
+      }
       default:  // won't be here
         ret = OB_ERR_PARSER_SYNTAX;
         SQL_RESV_LOG(WARN, "Wrong column attribute", K(ret), K(attr_node->type_));
