@@ -4,8 +4,9 @@
 # 赛题二：文件即数据库
 # read_csv / read_json / read_ndjson / read_parquet / glob / DESCRIBE / COPY
 #
-# 测试数据由 file_sql/include/init_file_sql.inc 部署到 $OBSERVER_DIR/file_sql_data，
-# 同时把 secure_file_priv 指到该目录并打开 enable_file_sql。
+# 测试数据由 file_sql/include/init_file_sql.inc 部署到固定临时目录
+# /tmp/seekdb_file_sql_data，同时把 secure_file_priv 指到该目录并打开
+# enable_file_sql。固定路径保证 .result 中回显的路径与机器无关。
 #
 # 说明：mysqltest 只在 --eval 语句中展开 $VAR，因此所有引用
 # $FILE_SQL_DATA_DIR 的语句都写成单行 --eval 形式。
