@@ -305,6 +305,30 @@ int ObCreateTableResolver::resolve(const ParseNode &parse_tree)
             } else if (OB_FAIL(resolve_table_elements(table_element_list_node, index_node_position_list, foreign_key_node_position_list, table_level_constraint_list, RESOLVE_NON_COL))) {
             }
           }
+          if (OB_SUCC(ret) && ai_column_defs_.count() > 0) {
+            // AI COLUMN: validate dependencies and add state / request / spec hidden columns
+            ObTableSchema &table_schema = create_table_stmt->get_create_table_arg().schema_;
+            if (is_create_as_sel) {
+              ret = OB_NOT_SUPPORTED;
+              LOG_USER_ERROR(OB_NOT_SUPPORTED, "AI COLUMN in CREATE TABLE ... SELECT");
+            } else if (OB_FAIL(ObAIColumnUtil::check_dependencies(table_schema, ai_column_defs_))) {
+            } else if (0 == get_primary_key_size()) {
+              // tasks address rows by their primary key
+              ret = OB_NOT_SUPPORTED;
+              LOG_USER_ERROR(OB_NOT_SUPPORTED, "AI COLUMN on a table without primary key");
+            }
+            for (int64_t i = 0; OB_SUCC(ret) && i < ai_column_defs_.count(); ++i) {
+              const uint64_t state_id = gen_column_id();
+              const uint64_t req_id = gen_column_id();
+              const uint64_t spec_id = gen_column_id();
+              if (OB_FAIL(ObAIColumnUtil::add_hidden_columns(table_schema, ai_column_defs_.at(i),
+                                                             state_id, req_id, spec_id))) {
+              }
+            }
+            if (OB_SUCC(ret)) {
+              table_schema.set_max_used_column_id(cur_column_id_);
+            }
+          }
           if (OB_SUCC(ret)) {
             reset();
             // When the user creates a table without specifying a primary key, it is internally implemented as a new table without a primary key, TableOrganizationFormat specified by the user is currently not supported

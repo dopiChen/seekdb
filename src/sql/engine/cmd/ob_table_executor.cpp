@@ -42,6 +42,7 @@
 
 #include "sql/printer/ob_select_stmt_printer.h"
 #include "share/ob_structured_event_logger.h"
+#include "sql/resolver/ddl/ob_ai_column_util.h"
 namespace oceanbase
 {
 using namespace common;
@@ -500,6 +501,15 @@ int ObCreateTableExecutor::execute(ObExecContext &ctx, ObCreateTableStmt &stmt)
       "schema_version", res.schema_version_);
     SQL_ENG_LOG(INFO, "finish create table execute.", K(ret), "ddl_event_info", ObDDLEventInfo(GCTX.self_addr()));
 
+    if (OB_SUCC(ret) && ObAIColumnUtil::has_ai_column(table_schema)) {
+      // mirror AI COLUMN definitions into oceanbase.__all_ai_column
+      // a new table carries all its AI columns in its first schema
+      if (OB_FAIL(ObAIColumnUtil::sync_metadata_after_ddl(create_table_arg.db_name_,
+                                                          table_schema.get_table_name_str(),
+                                                          OB_INVALID_VERSION))) {
+        SQL_ENG_LOG(WARN, "failed to sync AI column metadata", K(ret));
+      }
+    }
     // only CTAS or create temporary table will make session_id != 0. If such table detected, set
     // need ctas cleanup task anyway to do some cleanup jobs
     if (0 != table_schema.get_session_id()) {
@@ -762,6 +772,9 @@ int ObAlterTableExecutor::execute(ObExecContext &ctx, ObAlterTableStmt &stmt)
   OV (OB_NOT_NULL(task_exec_ctx = GET_SQL_EXECUTOR_CTX(ctx)), OB_NOT_INIT);
   if (OB_FAIL(ret)) {
     // do nothing
+  } else if (stmt.is_ai_column_retry()) {
+    OZ (ObAIColumnUtil::retry_rows(stmt.get_ai_retry_table_id(), stmt.get_ai_retry_column(),
+                                   stmt.get_ai_retry_where()));
   } else if (stmt.is_alter_triggers()) {
     if (stmt.get_tg_arg().trigger_infos_.count() > 0) {
       stmt.get_tg_arg().ddl_stmt_str_ = first_stmt;
@@ -878,6 +891,15 @@ int ObAlterTableExecutor::execute(ObExecContext &ctx, ObAlterTableStmt &stmt)
       "table_info", table_info_buffer,
       "schema_version", res.schema_version_);
     SQL_ENG_LOG(INFO, "finish alter table execute.", K(ret), "ddl_event_info", ObDDLEventInfo(GCTX.self_addr()), K(first_stmt));
+    if (OB_SUCC(ret) && ObAIColumnUtil::has_ai_column(alter_table_arg.alter_table_schema_)) {
+      // ADD COLUMN ... AI COLUMN: mirror the definitions into oceanbase.__all_ai_column
+      AlterTableSchema &alter_schema = alter_table_arg.alter_table_schema_;
+      if (OB_FAIL(ObAIColumnUtil::sync_metadata_after_ddl(alter_schema.get_origin_database_name(),
+                                                          alter_schema.get_origin_table_name(),
+                                                          res.schema_version_))) {
+        SQL_ENG_LOG(WARN, "failed to sync AI column metadata", K(ret));
+      }
+    }
   }
   return ret;
 }

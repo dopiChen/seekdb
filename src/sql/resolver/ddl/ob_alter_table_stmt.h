@@ -52,6 +52,18 @@ public:
   void set_is_alter_system(const bool flag) { is_alter_system_ = flag; }
 
   bool is_alter_triggers() const { return is_alter_triggers_; }
+  // ALTER TABLE ... RETRY AI COLUMN c [WHERE ...]
+  bool is_ai_column_retry() const { return is_ai_column_retry_; }
+  void set_ai_column_retry(uint64_t table_id, const common::ObString &column, const common::ObString &where)
+  {
+    is_ai_column_retry_ = true;
+    ai_retry_table_id_ = table_id;
+    ai_retry_column_ = column;
+    ai_retry_where_ = where;
+  }
+  uint64_t get_ai_retry_table_id() const { return ai_retry_table_id_; }
+  const common::ObString &get_ai_retry_column() const { return ai_retry_column_; }
+  const common::ObString &get_ai_retry_where() const { return ai_retry_where_; }
   void set_is_alter_triggers(const bool flag) { is_alter_triggers_ = flag; }
 
   int set_origin_database_name(const common::ObString &origin_db_name);
@@ -111,6 +123,10 @@ private:
   common::ObSArray<obcall::ObCreateIndexArg*> index_arg_list_;
   common::ObIAllocator *fts_arg_allocator_;
   bool is_alter_triggers_;
+  bool is_ai_column_retry_ = false;
+  uint64_t ai_retry_table_id_ = common::OB_INVALID_ID;
+  common::ObString ai_retry_column_;
+  common::ObString ai_retry_where_;
   obcall::ObAlterTriggerArg tg_arg_;
   uint64_t alter_table_action_count_;
   obcall::ObExchangePartitionArg exchange_partition_arg_;

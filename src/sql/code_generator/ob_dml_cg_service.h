@@ -370,6 +370,10 @@ private:
                              const ObTableSchema *parent_table,
                              ObIArray<int64_t> &rowkey_ids_);
   
+  // AI COLUMN maintenance of a DML on the primary table
+  int convert_ai_columns(ObLogDelUpd &op,
+                         const IndexDMLInfo &index_dml_info,
+                         ObDMLBaseCtDef &dml_ctdef);
   int convert_foreign_keys(ObLogDelUpd &op,
                            const IndexDMLInfo &index_dml_info,
                            ObDMLBaseCtDef &dml_ctdef);

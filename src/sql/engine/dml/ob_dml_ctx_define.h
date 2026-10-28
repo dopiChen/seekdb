@@ -345,6 +345,42 @@ public:
 };
 typedef common::ObFixedArray<ObForeignKeyArg, common::ObIAllocator> ObForeignKeyArgArray;
 
+// AI COLUMN maintenance of one result column; indexes refer to old_row_ / new_row_
+struct ObAIColumnDmlCol
+{
+  OB_UNIS_VERSION(1);
+public:
+  ObAIColumnDmlCol()
+    : column_id_(common::OB_INVALID_ID), result_idx_(-1), state_idx_(-1), req_idx_(-1),
+      version_(1), is_vector_(false), dep_begin_(0), dep_cnt_(0) {}
+  TO_STRING_KV(K_(column_id), K_(result_idx), K_(state_idx), K_(req_idx), K_(version), K_(is_vector),
+               K_(dep_begin), K_(dep_cnt));
+  uint64_t column_id_;
+  int32_t result_idx_;
+  int32_t state_idx_;
+  int32_t req_idx_;
+  int64_t version_;
+  bool is_vector_;
+  int32_t dep_begin_;   // range in ObAIColumnDmlArg::dep_idxs_
+  int32_t dep_cnt_;
+};
+
+// AI COLUMN maintenance of a DML on the primary table: resets results, assigns
+// request ids and keeps oceanbase.__all_ai_column_task in the same transaction
+struct ObAIColumnDmlArg
+{
+  OB_UNIS_VERSION(1);
+public:
+  ObAIColumnDmlArg(common::ObIAllocator &alloc)
+    : table_id_(common::OB_INVALID_ID), cols_(alloc), pk_cols_(alloc), dep_idxs_(alloc) {}
+  bool is_valid() const { return cols_.count() > 0 && pk_cols_.count() > 0; }
+  TO_STRING_KV(K_(table_id), K_(cols), K_(pk_cols), K_(dep_idxs));
+  uint64_t table_id_;
+  common::ObFixedArray<ObAIColumnDmlCol, common::ObIAllocator> cols_;
+  common::ObFixedArray<ObForeignKeyColumn, common::ObIAllocator> pk_cols_;
+  common::ObFixedArray<int32_t, common::ObIAllocator> dep_idxs_;  // row indexes of input columns
+};
+
 struct ColumnContent
 {
   OB_UNIS_VERSION(1);
@@ -438,6 +474,7 @@ public:
   bool reserved_advanced_trigger_;
   ObExpr *trans_info_expr_;
   bool is_vec_hnsw_index_vid_opt_;
+  ObAIColumnDmlArg ai_arg_;
 protected:
   ObDMLBaseCtDef(common::ObIAllocator &alloc,
                  ObDASDMLBaseCtDef &das_base_ctdef,
@@ -456,7 +493,8 @@ protected:
       is_table_without_pk_(false),
       reserved_advanced_trigger_(false),
       trans_info_expr_(nullptr),
-      is_vec_hnsw_index_vid_opt_(false)
+      is_vec_hnsw_index_vid_opt_(false),
+      ai_arg_(alloc)
   { }
 };
 

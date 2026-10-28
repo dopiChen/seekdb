@@ -10975,5 +10975,18 @@
     "info_cn": "",
     "background_cn": "",
     "ref_url": ""
+  },
+  "ai_column_strict_read": {
+    "id": 10755,
+    "name": "ai_column_strict_read",
+    "default_value": "0",
+    "base_value": "0",
+    "data_type": "bool",
+    "info": "reject statements that reference AI columns with rows that are not READY",
+    "flags": "GLOBAL | SESSION | INFLUENCE_PLAN",
+    "publish_version": "1.0.0.0",
+    "info_cn": "开启后，语句引用的 AI 列存在未就绪行时报错",
+    "background_cn": "",
+    "ref_url": ""
   }
 }

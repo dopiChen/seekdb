@@ -41,6 +41,7 @@
 #include "sql/resolver/dcl/ob_dcl_resolver.h"
 #include "sql/resolver/ddl/ob_ddl_resolver.h"
 #include "sql/hybrid_search/ob_hybrid_search_executor.h"
+#include "sql/resolver/ddl/ob_ai_column_util.h"
 
 namespace oceanbase
 {
@@ -2195,6 +2196,46 @@ int ObDMLResolver::resolve_qualified_identifier(ObQualifiedName &q_name,
     OZ (columns.at(i).replace_access_ident_params(q_name.ref_expr_, real_ref_expr));
   }
 
+  if (OB_SUCC(ret) && OB_NOT_NULL(real_ref_expr) && real_ref_expr->is_column_ref_expr()) {
+    OZ (check_ai_column_strict_read(*static_cast<ObColumnRefRawExpr *>(real_ref_expr)));
+  }
+
+  return ret;
+}
+
+// ai_column_strict_read: an AI COLUMN referenced by the statement must be READY
+// in every row of the table (the check is column wide, not per selected row).
+int ObDMLResolver::check_ai_column_strict_read(const ObColumnRefRawExpr &col)
+{
+  int ret = OB_SUCCESS;
+  const TableItem *table_item = nullptr;
+  const ObTableSchema *table_schema = nullptr;
+  if (OB_ISNULL(get_stmt()) || OB_ISNULL(session_info_) || OB_ISNULL(schema_checker_)
+      || session_info_->is_inner()) {
+  } else if (OB_ISNULL(table_item = get_stmt()->get_table_item_by_id(col.get_table_id()))
+             || !table_item->is_basic_table()) {
+  } else if (OB_FAIL(schema_checker_->get_table_schema(table_item->ref_id_, table_schema))) {
+    ret = OB_SUCCESS;
+  } else if (OB_ISNULL(table_schema) || !ObAIColumnUtil::has_ai_column(*table_schema)) {
+  } else {
+    ObArenaAllocator tmp_alloc("AIColStrict");
+    ObSEArray<ObAIColumnDef, 4> defs;
+    bool strict = false;
+    if (OB_NOT_NULL(get_stmt()->get_query_ctx())) {
+      get_stmt()->get_query_ctx()->set_has_ai_column_ref();
+    }
+    if (OB_FAIL(session_info_->get_sys_variable(share::SYS_VAR_AI_COLUMN_STRICT_READ, strict))) {
+      ret = OB_SUCCESS;
+    } else if (!strict) {
+    } else if (OB_FAIL(ObAIColumnUtil::get_ai_columns(*table_schema, tmp_alloc, defs))) {
+    } else {
+      for (int64_t i = 0; OB_SUCC(ret) && i < defs.count(); ++i) {
+        if (defs.at(i).column_id_ == col.get_column_id()) {
+          ret = ObAIColumnUtil::check_column_ready(*table_schema, defs.at(i));
+        }
+      }
+    }
+  }
   return ret;
 }
 

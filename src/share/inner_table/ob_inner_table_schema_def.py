@@ -2467,6 +2467,65 @@ all_objauth_mysql_def = dict(
 def_table_schema(**all_objauth_mysql_def)
 def_table_schema(**gen_history_table_def(1134, all_objauth_mysql_def))
 
+# AI COLUMN definitions: one row per AI result column
+all_ai_column_def = dict(
+    owner = 'seekdb',
+    table_name = '__all_ai_column',
+    table_id = '1135',
+    table_type = 'SYSTEM_TABLE',
+    gm_columns = ['gmt_create', 'gmt_modified'],
+    rowkey_columns = [
+        ('table_id', 'int'),
+        ('column_id', 'int')
+    ],
+    is_cluster_private = False,
+    meta_record_in_sys = False,
+    normal_columns = [
+        ('column_name', 'varchar:OB_MAX_COLUMN_NAME_LENGTH', 'false'),
+        ('state_column_id', 'int', 'false'),
+        ('request_column_id', 'int', 'false'),
+        ('result_spec_column_id', 'int', 'false'),
+        ('func_type', 'int', 'false'),
+        ('model_name', 'varchar:128', 'false'),
+        ('input_expr', 'longtext', 'false'),
+        ('normalized_expr', 'longtext', 'false'),
+        ('dependency_columns', 'longtext', 'true'),
+        ('result_type', 'varchar:128', 'false'),
+        ('dimension', 'int', 'false', '0'),
+        ('sync_mode', 'varchar:32', 'false', 'async'),
+        ('max_retries', 'int', 'false', '0'),
+        ('definition_version', 'int', 'false', '1')
+    ]
+)
+def_table_schema(**all_ai_column_def)
+
+# AI COLUMN tasks: created in the business transaction, consumed by the AI worker
+all_ai_column_task_def = dict(
+    owner = 'seekdb',
+    table_name = '__all_ai_column_task',
+    table_id = '1136',
+    table_type = 'SYSTEM_TABLE',
+    gm_columns = ['gmt_create', 'gmt_modified'],
+    rowkey_columns = [
+        ('table_id', 'int'),
+        ('request_id', 'int'),
+        ('column_id', 'int')
+    ],
+    is_cluster_private = False,
+    meta_record_in_sys = False,
+    normal_columns = [
+        ('rowkey_predicate', 'varchar:4096', 'false'),
+        ('state', 'int', 'false', '0'),
+        ('retry_count', 'int', 'false', '0'),
+        ('eligible_ts', 'timestamp', 'false'),
+        ('definition_version', 'int', 'false', '1'),
+        ('last_error', 'varchar:1024', 'true'),
+        ('result_state', 'int', 'false', '0'),
+        ('result_value', 'longtext', 'true')
+    ]
+)
+def_table_schema(**all_ai_column_task_def)
+
 
 # Reserved position (placeholder before this line)
 # Placeholder suggestion for this section: Use actual table names for placeholders

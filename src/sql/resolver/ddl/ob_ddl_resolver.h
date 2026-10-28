@@ -17,6 +17,7 @@
 #ifndef OCEANBASE_SQL_RESOLVER_DDL_OB_DDL_RESOLVER_H_
 #define OCEANBASE_SQL_RESOLVER_DDL_OB_DDL_RESOLVER_H_ 1
 #include "sql/resolver/ob_stmt_resolver.h"
+#include "sql/resolver/ddl/ob_ai_column_util.h"
 #include "sql/resolver/ob_resolver_utils.h"
 #include "lib/hash/ob_placement_hashset.h"
 #include "lib/string/ob_sql_string.h"
@@ -881,6 +882,8 @@ protected:
   common::ObString vec_column_name_;
   ObIndexType vec_index_type_;
   ObSemiStructEncodingType semistruct_encoding_type_;
+  // AI COLUMN definitions collected while resolving column definitions
+  common::ObSEArray<ObAIColumnDef, 4> ai_column_defs_;
 private:
   template <typename STMT>
   DISALLOW_COPY_AND_ASSIGN(ObDDLResolver);

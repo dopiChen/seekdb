@@ -1640,6 +1640,14 @@ int ObSelectResolver::expand_target_list(
   if (table_item.is_basic_table()) {
     if (OB_FAIL(resolve_all_basic_table_columns(table_item, false, &column_items))) {
     }
+    // Star expansion does not pass through resolve_qualified_identifier().
+    // It still references every projected AI column and must obey strict read.
+    for (int64_t i = 0; OB_SUCC(ret) && i < column_items.count(); ++i) {
+      if (OB_ISNULL(column_items.at(i).expr_)) {
+        ret = OB_ERR_UNEXPECTED;
+      } else if (OB_FAIL(check_ai_column_strict_read(*column_items.at(i).expr_))) {
+      }
+    }
   } else if (table_item.is_generated_table() ||
              table_item.is_temp_table() ||
              table_item.is_lateral_table()) {
