@@ -72,17 +72,20 @@ int ObTextRetrievalTokenIter::init(const ObTextRetrievalScanIterParam &iter_para
       OB_ISNULL(inv_scan_domain_id_col_) || OB_ISNULL(allocator_) || OB_ISNULL(mem_context_.ref_context())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("inv_idx_scan_iter or eval_ctx is NULL", K(ret), K_(inv_idx_scan_iter), KPC_(eval_ctx), KPC_(inv_idx_scan_param), KP(allocator_), KP(mem_context_.ref_context()));
-  } else if (!need_calc_relevance()) {
-  } else if (OB_ISNULL(relevance_expr_) || OB_ISNULL(inv_idx_agg_expr_) || OB_ISNULL(inv_idx_agg_iter_)) {
-    ret = OB_ERR_UNEXPECTED;
-  } else if (OB_ISNULL(inv_scan_doc_length_col_)) {
-    ret = OB_ERR_UNEXPECTED;
-  } else if (OB_FAIL(init_calc_exprs_in_relevance_expr())) {
   } else if (OB_ISNULL(skip_ = sql::to_bit_vector(
                            allocator_->alloc(sql::ObBitVector::memory_size(max_batch_size_))))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
   } else {
     skip_->init(max_batch_size_);
+    if (!need_calc_relevance()) {
+      // the relevance score is not required by the query, only the matched doc ids are
+      // projected, so none of the bm25 params/exprs is needed.
+    } else if (OB_ISNULL(relevance_expr_) || OB_ISNULL(inv_idx_agg_expr_) || OB_ISNULL(inv_idx_agg_iter_)) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if (OB_ISNULL(inv_scan_doc_length_col_)) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if (OB_FAIL(init_calc_exprs_in_relevance_expr())) {
+    }
   }
   is_inited_ = true;
   return ret;
@@ -96,7 +99,7 @@ void ObTextRetrievalTokenIter::reset()
 
 void ObTextRetrievalTokenIter::reuse()
 {
-  if (inv_idx_agg_cache_mode_ && !inv_idx_agg_param_->need_switch_param_) {
+  if (inv_idx_agg_cache_mode_ && need_inv_idx_agg() && !inv_idx_agg_param_->need_switch_param_) {
     // do nothing
   } else {
     token_doc_cnt_calculated_ = false;
@@ -302,7 +305,33 @@ int ObTextRetrievalTokenIter::advance_to(const ObDatum &id_datum)
 int ObTextRetrievalTokenIter::update_scan_param(const ObString &token, common::ObArenaAllocator &allocator)
 {
   int ret = OB_SUCCESS;
-  if (OB_UNLIKELY(inv_idx_agg_param_->key_ranges_.count() != 1)) {
+  if (!need_inv_idx_agg()) {
+    // no inverted index aggregate scan, only rewrite the token of the inv index scan ranges
+    if (OB_UNLIKELY(inv_idx_scan_param_->key_ranges_.empty())) {
+      ret = OB_ERR_UNEXPECTED;
+    } else {
+      ObObj tmp_obj;
+      tmp_obj.set_string(ObVarcharType, token);
+      tmp_obj.set_meta_type(inv_idx_scan_param_->key_ranges_.at(0).start_key_.get_obj_ptr()->meta_);
+      ObSEArray<ObNewRange, 4> scan_ranges;
+      if (OB_FAIL(scan_ranges.assign(inv_idx_scan_param_->key_ranges_))) {
+      } else {
+        for (int64_t i = 0; OB_SUCC(ret) && i < scan_ranges.count(); ++i) {
+          if (OB_FAIL(ob_write_obj(allocator, tmp_obj, *scan_ranges.at(i).start_key_.get_obj_ptr()))) {
+          } else if (OB_FAIL(ob_write_obj(allocator, tmp_obj, *scan_ranges.at(i).end_key_.get_obj_ptr()))) {
+          }
+        }
+      }
+      if (FAILEDx(query::das_scan_reuse(inv_idx_scan_iter_))) {
+      } else if (OB_UNLIKELY(!inv_idx_scan_param_->key_ranges_.empty())) {
+        ret = OB_ERR_UNEXPECTED;
+      } else if (OB_FAIL(inv_idx_scan_param_->key_ranges_.assign(scan_ranges))) {
+      } else if (OB_FAIL(query::das_scan_rescan(inv_idx_scan_iter_))) {
+      } else {
+        reuse();
+      }
+    }
+  } else if (OB_UNLIKELY(inv_idx_agg_param_->key_ranges_.count() != 1)) {
     ret = OB_ERR_UNEXPECTED;
   } else {
     ObNewRange scan_range = inv_idx_agg_param_->key_ranges_.at(0);
@@ -313,8 +342,6 @@ int ObTextRetrievalTokenIter::update_scan_param(const ObString &token, common::O
       ret = OB_ERR_UNEXPECTED;
     } else if (OB_FAIL(ob_write_obj(allocator, tmp_obj, *scan_range.start_key_.get_obj_ptr()))) {
     } else if (OB_FAIL(ob_write_obj(allocator, tmp_obj, *scan_range.end_key_.get_obj_ptr()))) {
-    } else if (!need_inv_idx_agg()) {
-      // skip inverted index aggregate iterator
     } else if (OB_FAIL(query::das_scan_reuse(inv_idx_agg_iter_))) {
     } else if (OB_UNLIKELY(!inv_idx_agg_param_->key_ranges_.empty())) {
       ret = OB_ERR_UNEXPECTED;
@@ -359,6 +386,14 @@ int ObTextRetrievalTokenIter::update_scan_param(const ObString &token, common::O
 int ObTextRetrievalTokenIter::estimate_token_doc_cnt()
 {
   int ret = OB_SUCCESS;
+  if (!need_calc_relevance()) {
+    // the doc freq of a token is only used to calculate the bm25 relevance, skip the
+    // row count estimation when the query does not need the score at all.
+    token_doc_cnt_ = 0;
+    max_token_relevance_ = 1.0;
+    token_doc_cnt_calculated_ = true;
+    return ret;
+  }
   int64_t logical_row_cnt = 0;
   int64_t physical_row_cnt = 0;
   ObSEArray<ObEstRowCountRecord, 1> est_records;
@@ -582,8 +617,11 @@ int ObTextRetrievalDaaTTokenIter::get_curr_score(double &score) const
   int ret = OB_SUCCESS;
   if (OB_UNLIKELY(cur_idx_ >= count_)) {
     ret = OB_ARRAY_OUT_OF_RANGE;
-  } else if (relevance_expr_) {
+  } else if (OB_NOT_NULL(relevance_expr_)) {
     score = relevance_[cur_idx_];
+  } else {
+    // relevance is not needed, any positive score keeps the semantics of the collector
+    score = 1.0;
   }
   return ret;
 }

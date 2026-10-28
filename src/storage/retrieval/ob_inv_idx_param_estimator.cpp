@@ -118,15 +118,17 @@ ObBM25ParamEstCtx::ObBM25ParamEstCtx()
     avg_doc_token_cnt_expr_(nullptr),
     doc_length_est_param_(nullptr),
     can_est_by_sum_skip_index_(false),
-    need_est_avg_doc_token_cnt_(false)
+    need_est_avg_doc_token_cnt_(false),
+    need_bm25_param_est_(true)
 {
 }
 
 bool ObBM25ParamEstCtx::is_valid() const
 {
-  bool bret = (estimated_total_doc_cnt_ > 0 || total_doc_cnt_expr_ != nullptr)
+  bool bret = !need_bm25_param_est_
+      || ((estimated_total_doc_cnt_ > 0 || total_doc_cnt_expr_ != nullptr)
       && (!need_est_avg_doc_token_cnt_ || avg_doc_token_cnt_expr_ != nullptr)
-      && doc_length_est_param_ != nullptr;
+          && doc_length_est_param_ != nullptr);
   return bret;
 }
 
@@ -143,6 +145,7 @@ int ObBM25ParamEstCtx::assign(const ObBM25ParamEstCtx &other)
     doc_length_est_param_ = other.doc_length_est_param_;
     can_est_by_sum_skip_index_ = other.can_est_by_sum_skip_index_;
     need_est_avg_doc_token_cnt_ = other.need_est_avg_doc_token_cnt_;
+    need_bm25_param_est_ = other.need_bm25_param_est_;
   }
   return ret;
 }
@@ -156,6 +159,7 @@ void ObBM25ParamEstCtx::reset()
   doc_length_est_param_ = nullptr;
   can_est_by_sum_skip_index_ = false;
   need_est_avg_doc_token_cnt_ = false;
+  need_bm25_param_est_ = true;
 }
 
 ObBM25ParamEstimator::ObBM25ParamEstimator()
@@ -210,6 +214,9 @@ int ObBM25ParamEstimator::do_estimation(sql::ObEvalCtx &eval_ctx)
   guard.set_batch_idx(0);
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
+  } else if (!est_ctx_.need_bm25_param_est_) {
+    // the relevance score is not consumed by the query, skip the estimation totally
+    estimated_ = true;
   } else if (!estimated_) {
     // skip repeated estimation
     if (est_ctx_.estimated_total_doc_cnt_ <= 0) {

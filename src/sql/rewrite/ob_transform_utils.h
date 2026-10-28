@@ -1879,7 +1879,16 @@ public:
   static int check_contain_correlated_json_table(const ObDMLStmt *stmt, bool &is_contain);
   static int check_contain_lost_deterministic_expr(const ObIArray<ObRawExpr*> &exprs,
                                                    bool &is_contain);
-  // check whether the score calculated by match expr is actually utilized
+  // check whether the score calculated by match expr is actually utilized.
+  // When the match score is only used as a boolean condition (e.g. the filter is
+  // BOOL(MATCH ... AGAINST ...) or MATCH ... AGAINST > 0), the accurate BM25
+  // relevance is not required: every document yielded by the retrieval scan
+  // matches the query, so the score is only needed to be non-zero.
+  static int check_need_calc_match_score(ObExecContext *exec_ctx,
+                                         const ObDMLStmt *stmt,
+                                         ObRawExpr *match_expr,
+                                         bool &need_calc,
+                                         ObIArray<ObExprConstraint> &constraints);
   static int check_expr_eq_zero(ObExecContext *ctx,
                                 ObRawExpr *expr, 
                                 bool &eq_zero, 

@@ -39,7 +39,8 @@ public:
                 ObFTCacheRangeContainer *range_container,
                 const ObFTDictDesc &desc)
       : is_inited_(false), desc_(desc), range_alloc_(lib::ObMemAttr("Range Dict")),
-        range_dicts_(&range_alloc_), range_container_(range_container)
+        range_dicts_(&range_alloc_), range_container_(range_container),
+        ordered_lookup_(false)
   {
   }
   ~ObFTRangeDict() override{};
@@ -62,6 +63,15 @@ public:
 
 public:
   int build_dict_from_cache(const ObFTCacheRangeContainer &range_container);
+
+  // Build a dict which owns its own copy of the DAT memory blocks, so that it does
+  // not depend on the lifecycle of the kv cache handles anymore.
+  // The returned dict is read only and is expected to be shared by all parsers of
+  // the process, so it must never be destroyed by a parser.
+  static int prepare_owned_dict(const ObFTDictDesc &desc,
+                                ObIAllocator &alloc,
+                                const ObFTCacheRangeContainer &range_container,
+                                ObIFTDict *&dict);
 
   static int try_load_cache(const ObFTDictDesc &desc,
                             const uint32_t range_count,
@@ -99,6 +109,10 @@ private:
 
   int find_first_char_range(const ObString &single_word, ObIFTDict *&dict) const;
 
+  // Whether range_dicts_ are sorted by start word and pairwise disjoint.
+  // Only in that case a binary search returns the same range as the linear scan.
+  bool can_use_ordered_lookup() const;
+
 private:
   static constexpr int DEFAULT_KEY_PER_RANGE = 50000; // by estimated
   bool is_inited_;
@@ -106,6 +120,7 @@ private:
   ObArenaAllocator range_alloc_;
   ObVector<ObFTRange, ObArenaAllocator> range_dicts_;
   ObFTCacheRangeContainer *range_container_; // only used to read cache
+  bool ordered_lookup_;                        // range_dicts_ sorted and disjoint
 
 private:
   DISALLOW_COPY_AND_ASSIGN(ObFTRangeDict);

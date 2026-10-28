@@ -1759,7 +1759,15 @@ private: // member functions
   int prepare_text_retrieval_info(const uint64_t ref_table_id,
                                   const uint64_t index_table_id,
                                   ObMatchFunRawExpr *ma_expr,
-                                  ObTextRetrievalInfo &tr_info);
+                                  ObTextRetrievalInfo &tr_info,
+                                  bool can_skip_relevance = false);
+  static bool raw_expr_contains(ObRawExpr *expr, ObRawExpr *target);
+  // The match score is also consumed when the match expr is used by select items,
+  // order by, group by, window functions, etc., in which case the accurate
+  // relevance has to be calculated.
+  static int check_match_score_projected(const ObDMLStmt *stmt,
+                                         ObRawExpr *match_expr,
+                                         bool &is_projected);
 public:
   inline const ObLogPlanHint &get_log_plan_hint() const { return log_plan_hint_; }
   inline bool has_join_order_hint() { return !log_plan_hint_.join_order_.leading_tables_.is_empty(); }

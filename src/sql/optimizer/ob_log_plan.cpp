@@ -12034,7 +12034,8 @@ int ObLogPlan::prepare_text_retrieval_scan(const ObIArray<ObRawExpr *> &scan_mat
   } else if (OB_FAIL(prepare_text_retrieval_info(table_scan->get_real_ref_table_id(),
                                                  table_scan->get_index_table_id(),
                                                  match_against,
-                                                 table_scan->get_text_retrieval_info()))) {
+                                                 table_scan->get_text_retrieval_info(),
+                                                 true))) {
   } else {
     ObTextRetrievalInfo &tr_info = table_scan->get_text_retrieval_info();
     tr_info.match_expr_ = match_against;
@@ -12167,10 +12168,83 @@ int ObLogPlan::prepare_text_retrieval_merge(const ObIArray<ObRawExpr *> &merge_m
   return ret;
 }
 
+bool ObLogPlan::raw_expr_contains(ObRawExpr *expr, ObRawExpr *target)
+{
+  bool found = false;
+  if (OB_NOT_NULL(expr)) {
+    if (expr == target) {
+      found = true;
+    } else if (expr->has_flag(CNT_MATCH_EXPR)) {
+      for (int64_t i = 0; !found && i < expr->get_param_count(); ++i) {
+        found = raw_expr_contains(expr->get_param_expr(i), target);
+      }
+    }
+  }
+  return found;
+}
+
+int ObLogPlan::check_match_score_projected(const ObDMLStmt *stmt,
+                                           ObRawExpr *match_expr,
+                                           bool &is_projected)
+{
+  int ret = OB_SUCCESS;
+  is_projected = false;
+  if (OB_ISNULL(stmt) || OB_ISNULL(match_expr)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", K(ret), KP(stmt), KP(match_expr));
+  } else if (!stmt->is_select_stmt()) {
+    // insert/update/delete may use the match expr in the assigned values as well,
+    // do not try to skip the relevance calculation for them.
+    is_projected = true;
+  } else {
+    const ObSelectStmt *select_stmt = static_cast<const ObSelectStmt *>(stmt);
+    if (select_stmt->has_order_by() || select_stmt->has_limit()) {
+      // The relevance score decides in which order the text retrieval scan delivers the
+      // matching documents, and an order by as well as the topn filter pushed down together
+      // with it depends on that delivery order.  A plain limit is not safe either even when
+      // no order by is written: the optimizer pushes the limit of a text retrieval scan down
+      // as a topn filter whose sort key is the implicit relevance score, so which rows the
+      // consumer sees still depends on the score and the original behaviour must be kept.
+      is_projected = true;
+    }
+    for (int64_t i = 0; OB_SUCC(ret) && !is_projected && i < select_stmt->get_select_item_size(); ++i) {
+      if (raw_expr_contains(select_stmt->get_select_item(i).expr_, match_expr)) {
+        is_projected = true;
+      }
+    }
+    const ObIArray<ObRawExpr *> &group_exprs = select_stmt->get_group_exprs();
+    for (int64_t i = 0; OB_SUCC(ret) && !is_projected && i < group_exprs.count(); ++i) {
+      if (raw_expr_contains(group_exprs.at(i), match_expr)) {
+        is_projected = true;
+      }
+    }
+    const ObIArray<ObAggFunRawExpr*> &aggr_items = select_stmt->get_aggr_items();
+    for (int64_t i = 0; OB_SUCC(ret) && !is_projected && i < aggr_items.count(); ++i) {
+      if (raw_expr_contains(aggr_items.at(i), match_expr)) {
+        is_projected = true;
+      }
+    }
+    const ObIArray<ObWinFunRawExpr *> &win_exprs = select_stmt->get_window_func_exprs();
+    for (int64_t i = 0; OB_SUCC(ret) && !is_projected && i < win_exprs.count(); ++i) {
+      if (raw_expr_contains(win_exprs.at(i), match_expr)) {
+        is_projected = true;
+      }
+    }
+    const ObIArray<OrderItem> &order_items = select_stmt->get_order_items();
+    for (int64_t i = 0; OB_SUCC(ret) && !is_projected && i < order_items.count(); ++i) {
+      if (OB_NOT_NULL(order_items.at(i).expr_)
+          && raw_expr_contains(order_items.at(i).expr_, match_expr)) {
+        is_projected = true;
+      }
+    }
+  }
+  return ret;
+}
 int ObLogPlan::prepare_text_retrieval_info(const uint64_t ref_table_id,
                                            const uint64_t index_table_id,
                                            ObMatchFunRawExpr *match_against,
-                                           ObTextRetrievalInfo &tr_info)
+                                           ObTextRetrievalInfo &tr_info,
+                                           bool can_skip_relevance)
 {
   int ret = OB_SUCCESS;
   ObSchemaGetterGuard *schema_guard = NULL;
@@ -12184,6 +12258,7 @@ int ObLogPlan::prepare_text_retrieval_info(const uint64_t ref_table_id,
   uint64_t inv_idx_tid = OB_INVALID_ID;
   ObSEArray<ObAuxTableMetaInfo, 4> index_infos;
   bool need_calc_relevance = true;
+  bool is_score_projected = false;
   ObSEArray<ObExprConstraint, 2> constraints;
   uint64_t docid_col_id = OB_INVALID_ID;
   if (OB_ISNULL(match_against) || OB_ISNULL(get_stmt()) || OB_ISNULL(get_optimizer_context().get_query_ctx())) {
@@ -12250,8 +12325,14 @@ int ObLogPlan::prepare_text_retrieval_info(const uint64_t ref_table_id,
       }
     }
   }
-  if (OB_SUCC(ret)) {
-    /*
+  if (OB_SUCC(ret) && can_skip_relevance
+      && ObMatchAgainstMode::NATURAL_LANGUAGE_MODE == match_against->get_mode_flag()) {
+    // Only natural language mode can skip the relevance calculation: for BOOLEAN_MODE the
+    // validity of a document is decided by `relevance > 0` in the DAS merge iter, while in
+    // natural language mode every document returned by the inverted index scan matches the
+    // query.  If the score of the match expr is not consumed anywhere (the filter is only
+    // used as a boolean condition), the accurate BM25 relevance is not required, which also
+    // skips the whole-document aggregation scan and the per-posting BM25 evaluation.
     if (OB_FAIL(ObTransformUtils::check_need_calc_match_score(get_optimizer_context().get_exec_ctx(),
                                                               get_stmt(),
                                                               match_against,
@@ -12261,8 +12342,18 @@ int ObLogPlan::prepare_text_retrieval_info(const uint64_t ref_table_id,
     } else if (!need_calc_relevance &&
                OB_FAIL(append_array_no_dup(get_optimizer_context().get_query_ctx()->all_expr_constraints_, constraints))) {
       LOG_WARN("failed to append array no dup", K(ret));
+    } else if (need_calc_relevance) {
+      // the score value is already required by the filters, nothing to do
+    } else if (OB_FAIL(check_match_score_projected(get_stmt(),
+                                                   match_against,
+                                                   is_score_projected))) {
+      LOG_WARN("failed to check match score projected", K(ret));
+    } else if (is_score_projected) {
+      // the score value is projected/consumed by the query, the relevance is still needed
+      need_calc_relevance = true;
     }
-    */
+  }
+  if (OB_SUCC(ret)) {
     tr_info.match_expr_ = match_against;
     tr_info.inv_idx_tid_ = inv_idx_tid;
     tr_info.fwd_idx_tid_ = fwd_idx_tid;

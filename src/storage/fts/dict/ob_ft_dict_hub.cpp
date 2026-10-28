@@ -44,6 +44,79 @@ int ObFTDictHub::destroy()
 {
   int ret = OB_SUCCESS;
   is_inited_ = false;
+  {
+    lib::ObMutexGuard guard(prepared_lock_);
+    for (uint32_t i = 0; i < PREPARED_DICT_CNT; ++i) {
+      const ObIFTDict *dict = ATOMIC_LOAD(&prepared_dicts_[i]);
+      if (OB_NOT_NULL(dict)) {
+        ATOMIC_STORE(&prepared_dicts_[i], nullptr);
+        const_cast<ObIFTDict *>(dict)->~ObIFTDict();
+      }
+    }
+    prepared_alloc_.reset();
+  }
+  return ret;
+}
+
+int ObFTDictHub::get_prepared_dict(const ObFTDictDesc &desc, const ObIFTDict *&dict)
+{
+  int ret = OB_SUCCESS;
+  dict = nullptr;
+  const uint32_t idx = static_cast<uint32_t>(desc.type_);
+  const ObIFTDict *prepared = nullptr;
+  if (!is_inited_) {
+    ret = OB_NOT_INIT;
+  } else if (idx >= PREPARED_DICT_CNT) {
+    ret = OB_INVALID_ARGUMENT;
+  } else if (OB_NOT_NULL(prepared = ATOMIC_LOAD(&prepared_dicts_[idx]))) {
+    // fast path, the shared dict is already built
+  } else {
+    lib::ObMutexGuard guard(prepared_lock_);
+    if (OB_NOT_NULL(prepared = ATOMIC_LOAD(&prepared_dicts_[idx]))) {
+      // built by another thread while waiting for the lock
+    } else if (OB_FAIL(build_prepared_dict(desc, prepared))) {
+      STORAGE_FTS_LOG(WARN, "Failed to build prepared dict", K(ret));
+    } else if (OB_NOT_NULL(prepared)) {
+      ATOMIC_STORE(&prepared_dicts_[idx], prepared);
+    }
+  }
+
+  if (OB_FAIL(ret)) {
+  } else if (OB_ISNULL(prepared)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else {
+    dict = prepared;
+  }
+  return ret;
+}
+
+int ObFTDictHub::build_prepared_dict(const ObFTDictDesc &desc, const ObIFTDict *&dict)
+{
+  int ret = OB_SUCCESS;
+  dict = nullptr;
+  // temporary allocator only holds the kv cache handles of the ranges, they are
+  // released as soon as the owned copy of the DAT blocks is built.
+  ObArenaAllocator tmp_alloc(lib::ObMemAttr("FTPreDict"));
+  ObFTCacheRangeContainer container(tmp_alloc);
+  const ObIFTDict *prepared = nullptr;
+  if (OB_FAIL(load_cache(desc, container))) {
+    if (OB_ENTRY_NOT_EXIST == ret) {
+      ret = OB_SUCCESS;
+      if (OB_FAIL(build_cache(desc, container))) {
+        STORAGE_FTS_LOG(WARN, "Failed to build dict cache", K(ret));
+      }
+    } else {
+      STORAGE_FTS_LOG(WARN, "Failed to load dict cache", K(ret));
+    }
+  }
+  if (OB_FAIL(ret)) {
+  } else if (OB_FAIL(ObFTRangeDict::prepare_owned_dict(desc, prepared_alloc_, container,
+                                                        const_cast<ObIFTDict *&>(prepared)))) {
+    STORAGE_FTS_LOG(WARN, "Failed to prepare owned dict", K(ret));
+  } else {
+    dict = prepared;
+  }
+  container.reset();
   return ret;
 }
 int ObFTDictHub::build_cache(const ObFTDictDesc &desc, ObFTCacheRangeContainer &container)

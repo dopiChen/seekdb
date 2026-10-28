@@ -378,10 +378,64 @@ int ObFTRangeDict::match_with_hit(const ObString &single_word,
   return last_hit.dict_->match_with_hit(single_word, last_hit, hit);
 }
 
+bool ObFTRangeDict::can_use_ordered_lookup() const
+{
+  bool is_ordered = true;
+  const int64_t range_cnt = range_dicts_.size();
+  for (int64_t i = 1; is_ordered && i < range_cnt; ++i) {
+    // starts must be ascending and the previous range must end before this one
+    // starts, otherwise one word could fall into several ranges and a linear scan
+    // would not be equivalent to a binary search.
+    if (ObCharset::strcmp(ObCollationType::CS_TYPE_UTF8MB4_BIN,
+                          range_dicts_[i - 1].end_.get_word(),
+                          range_dicts_[i].start_.get_word())
+        >= 0) {
+      is_ordered = false;
+    } else if (ObCharset::strcmp(ObCollationType::CS_TYPE_UTF8MB4_BIN,
+                                 range_dicts_[i].start_.get_word(),
+                                 range_dicts_[i - 1].start_.get_word())
+               < 0) {
+      is_ordered = false;
+    }
+  }
+  return is_ordered;
+}
+
 int ObFTRangeDict::find_first_char_range(const ObString &single_word, ObIFTDict *&dict) const
 {
   int ret = OB_SUCCESS;
   bool found = false;
+  if (ordered_lookup_) {
+    // Ranges are sorted and disjoint, so at most one range can contain
+    // single_word: locate it with a binary search instead of scanning all ranges.
+    int64_t left = 0;
+    int64_t right = range_dicts_.size() - 1;
+    int64_t hit_idx = -1;
+    while (left <= right) {
+      const int64_t mid = left + ((right - left) >> 1);
+      if (ObCharset::strcmp(ObCollationType::CS_TYPE_UTF8MB4_BIN,
+                            range_dicts_[mid].start_.get_word(),
+                            single_word)
+          <= 0) {
+        hit_idx = mid;
+        left = mid + 1;
+      } else {
+        right = mid - 1;
+      }
+    }
+    if (hit_idx >= 0
+        && ObCharset::strcmp(ObCollationType::CS_TYPE_UTF8MB4_BIN,
+                             range_dicts_[hit_idx].end_.get_word(),
+                             single_word)
+               >= 0) {
+      dict = range_dicts_[hit_idx].dict_;
+      found = true;
+    }
+    if (!found) {
+      ret = OB_ENTRY_NOT_EXIST;
+    }
+    return ret;
+  }
   for (int i = 0; OB_SUCC(ret) && !found && i < range_dicts_.size(); ++i) {
     if (ObCharset::strcmp(ObCollationType::CS_TYPE_UTF8MB4_BIN,
                           range_dicts_[i].start_.get_word(),
@@ -421,6 +475,75 @@ int ObFTRangeDict::build_dict_from_cache(const ObFTCacheRangeContainer &range_co
       if (OB_FAIL(range_dicts_.push_back(range))) {
       }
     }
+  }
+  if (OB_SUCC(ret)) {
+    ordered_lookup_ = can_use_ordered_lookup();
+  }
+  return ret;
+}
+
+int ObFTRangeDict::prepare_owned_dict(const ObFTDictDesc &desc,
+                                      ObIAllocator &alloc,
+                                      const ObFTCacheRangeContainer &range_container,
+                                      ObIFTDict *&dict)
+{
+  int ret = OB_SUCCESS;
+  ObFTRangeDict *range_dict = nullptr;
+  int64_t total_size = 0;
+  if (OB_ISNULL(range_dict = OB_NEWx(ObFTRangeDict, &alloc, alloc, nullptr, desc))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+  } else {
+    for (ObList<ObFTCacheRangeHandle *, ObIAllocator>::const_iterator
+             iter = range_container.get_handles().begin();
+         OB_SUCC(ret) && iter != range_container.get_handles().end();
+         ++iter) {
+      const ObFTCacheRangeHandle *ptr = *iter;
+      const ObFTDAT *dat = (nullptr == ptr) ? nullptr : ptr->value_->dat_block_;
+      if (OB_ISNULL(dat)) {
+        ret = OB_ERR_UNEXPECTED;
+      } else {
+        const int64_t block_size = static_cast<int64_t>(dat->mem_block_size_);
+        char *buf = nullptr;
+        if (OB_ISNULL(buf = static_cast<char *>(range_dict->range_alloc_.alloc(block_size)))) {
+          ret = OB_ALLOCATE_MEMORY_FAILED;
+        } else {
+          // The DAT memory block is self described: base/check/map are addressed by
+          // offsets from the block head, so a plain copy is a fully functional dict.
+          MEMCPY(buf, dat, block_size);
+          ObFTDAT *owned_dat = reinterpret_cast<ObFTDAT *>(buf);
+          ObFTCacheDict *cache_dict = nullptr;
+          if (OB_ISNULL(cache_dict
+                        = OB_NEWx(ObFTCacheDict,
+                                  &range_dict->range_alloc_,
+                                  ObCollationType::CS_TYPE_UTF8MB4_BIN,
+                                  owned_dat))) {
+            ret = OB_ALLOCATE_MEMORY_FAILED;
+          } else {
+            ObFTRange range;
+            range.start_ = owned_dat->start_word_;
+            range.end_ = owned_dat->end_word_;
+            range.dict_ = cache_dict;
+            total_size += block_size;
+            if (OB_FAIL(range_dict->range_dicts_.push_back(range))) {
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (OB_FAIL(ret)) {
+    if (OB_NOT_NULL(range_dict)) {
+      range_dict->~ObFTRangeDict();
+      alloc.free(range_dict);
+    }
+    dict = nullptr;
+  } else {
+    range_dict->ordered_lookup_ = range_dict->can_use_ordered_lookup();
+    range_dict->is_inited_ = true;
+    dict = range_dict;
+    STORAGE_FTS_LOG(INFO, "prepared owned dict", K(range_dict->range_dicts_.size()),
+                    K(total_size), K(range_dict->ordered_lookup_));
   }
   return ret;
 }

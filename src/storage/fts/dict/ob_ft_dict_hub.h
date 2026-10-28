@@ -17,9 +17,12 @@
 #ifndef _OCEANBASE_STORAGE_FTS_DICT_OB_FT_DICT_HUB_H_
 #define _OCEANBASE_STORAGE_FTS_DICT_OB_FT_DICT_HUB_H_
 
+#include "lib/allocator/page_arena.h"
 #include "lib/charset/ob_charset.h"
 #include "lib/lock/ob_bucket_lock.h"
+#include "lib/lock/ob_mutex.h"
 #include "storage/fts/dict/ob_ft_dict_def.h"
+#include "storage/fts/dict/ob_ft_dict.h"
 
 namespace oceanbase
 {
@@ -96,8 +99,13 @@ class ObFTCacheRangeContainer;
 class ObFTDictHub
 {
 public:
-  ObFTDictHub() : is_inited_(false), dict_map_(), rw_dict_lock_() {}
-  ~ObFTDictHub() {}
+  ObFTDictHub()
+      : is_inited_(false), dict_map_(), rw_dict_lock_(), prepared_lock_(),
+        prepared_alloc_(lib::ObMemAttr("FTPreDict"))
+  {
+    MEMSET(prepared_dicts_, 0, sizeof(prepared_dicts_));
+  }
+  ~ObFTDictHub() { destroy(); }
 
   int init();
 
@@ -107,17 +115,32 @@ public:
 
   int load_cache(const ObFTDictDesc &desc, ObFTCacheRangeContainer &container);
 
+  // Get the process level shared dict of the given type.
+  // Building a dict for one parser is expensive (kv cache lookup, range dict and
+  // segmenter objects), while the built-in dicts never change during the life of
+  // the process, so build it once and share the read only dict with every parser.
+  // The returned dict must not be destroyed by the caller.
+  int get_prepared_dict(const ObFTDictDesc &desc, const ObIFTDict *&dict);
+
 private:
   int get_dict_info(const ObFTDictInfoKey &key, ObFTDictInfo &info);
 
   int put_dict_info(const ObFTDictInfoKey &key, const ObFTDictInfo &info);
 
+  // called with prepared_lock_ hold
+  int build_prepared_dict(const ObFTDictDesc &desc, const ObIFTDict *&dict);
 
 private:
+  static constexpr uint32_t PREPARED_DICT_CNT
+      = static_cast<uint32_t>(ObFTDictType::DICT_IK_STOP) + 1;
   bool is_inited_;
   // holds info of dict
   hash::ObHashMap<ObFTDictInfoKey, ObFTDictInfo> dict_map_;
   ObBucketLock rw_dict_lock_;
+  // shared read only dicts
+  lib::ObMutex prepared_lock_;
+  common::ObArenaAllocator prepared_alloc_;
+  const ObIFTDict *prepared_dicts_[PREPARED_DICT_CNT];
 };
 
 } //  namespace storage

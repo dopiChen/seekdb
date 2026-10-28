@@ -55,7 +55,8 @@ struct ObBM25ParamEstCtx
   void reset();
   TO_STRING_KV(K_(estimated_total_doc_cnt), KP_(total_doc_cnt_iter),
       KP_(total_doc_cnt_expr), KP_(avg_doc_token_cnt_expr), KP_(doc_length_est_param),
-      K_(can_est_by_sum_skip_index), K_(need_est_avg_doc_token_cnt));
+      K_(can_est_by_sum_skip_index), K_(need_est_avg_doc_token_cnt),
+      K_(need_bm25_param_est));
   int64_t estimated_total_doc_cnt_;
   sql::ObDASScanIter *total_doc_cnt_iter_;
   sql::ObExpr *total_doc_cnt_expr_;
@@ -63,6 +64,10 @@ struct ObBM25ParamEstCtx
   ObBlockStatScanParam *doc_length_est_param_;
   bool can_est_by_sum_skip_index_;
   bool need_est_avg_doc_token_cnt_;
+  // false when the query does not consume the relevance score at all, e.g.
+  // `select count(*) from t where match(...) against(...)`.  In this case neither
+  // the total doc cnt aggregation scan nor the avg doc len estimation is needed.
+  bool need_bm25_param_est_;
 };
 
 class ObBM25ParamEstimator

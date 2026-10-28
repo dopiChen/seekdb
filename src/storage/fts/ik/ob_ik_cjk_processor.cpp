@@ -38,10 +38,9 @@ int ObIKCJKProcessor::do_process(TokenizeContext &ctx,
 
   if (ObFTCharUtil::CharType::USELESS != type) {
     // handle previous hits_ first and then check from this char
-    for (ObList<ObDATrieHit, ObIAllocator>::iterator iter = hits_.begin();
-         OB_SUCC(ret) && iter != hits_.end();
-         iter++) {
-      ObDATrieHit &hit = *iter;
+    for (int64_t idx = 0; OB_SUCC(ret) && idx < hits_.count(); ) {
+      ObDATrieHit &hit = hits_.at(idx);
+      bool removed = false;
       if (OB_FAIL(dict_main_.match_with_hit({char_len, ch}, hit, hit))) {
       } else if (hit.is_match()) {
         if (OB_FAIL(ctx.add_token(ctx.fulltext(),
@@ -55,9 +54,16 @@ int ObIKCJKProcessor::do_process(TokenizeContext &ctx,
       } else if (hit.is_prefix()) {
         // nothing
       } else if (hit.is_unmatch()) {
-        hits_.erase(hit);
+        if (OB_FAIL(hits_.remove(idx))) {
+          LOG_WARN("failed to remove unmatch hit", K(ret), K(idx));
+        } else {
+          removed = true;
+        }
       } else {
         ret = OB_UNEXPECT_INTERNAL_ERROR;
+      }
+      if (!removed) {
+        ++idx;
       }
     }
     if (OB_SUCC(ret)) {
@@ -67,14 +73,19 @@ int ObIKCJKProcessor::do_process(TokenizeContext &ctx,
       if (OB_FAIL(dict_main_.match({char_len, ch}, hit))) {
       } else if (hit.is_match()) {
         // output token
-        hits_.push_back(hit);
-        ctx.add_token(ctx.fulltext(),
-                      ctx.get_cursor(),
-                      char_len,
-                      1,
-                      ObIKTokenType::IK_CHINESE_TOKEN);
+        if (OB_FAIL(hits_.push_back(hit))) {
+          LOG_WARN("failed to push back hit", K(ret));
+        } else {
+          ctx.add_token(ctx.fulltext(),
+                        ctx.get_cursor(),
+                        char_len,
+                        1,
+                        ObIKTokenType::IK_CHINESE_TOKEN);
+        }
       } else if (hit.is_prefix()) {
-        hits_.push_back(hit);
+        if (OB_FAIL(hits_.push_back(hit))) {
+          LOG_WARN("failed to push back hit", K(ret));
+        }
       } else {
         // ignore mismatch
       }
