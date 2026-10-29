@@ -24,6 +24,23 @@ namespace oceanbase
 namespace share
 {
 
+namespace
+{
+// ObCharset::tolower() materializes a converted copy even when nothing changes.
+// English tokens are usually already lower case, so skip the copy in that case.
+inline bool needs_casedown(const ObString &str)
+{
+  const unsigned char *ptr = reinterpret_cast<const unsigned char *>(str.ptr());
+  for (int64_t i = 0; i < str.length(); ++i) {
+    if (ptr[i] >= 0x80 || (ptr[i] >= 'A' && ptr[i] <= 'Z')) {
+      return true;
+    }
+  }
+  return false;
+}
+} // namespace
+
+
 ObTextTokenizer::ObTextTokenizer()
   : ObITokenStream(),
     input_doc_(nullptr),
@@ -294,10 +311,14 @@ int ObBasicEnglishNormalizer::get_next(ObDatum &next_token, int64_t &token_freq)
       ret = OB_ERR_UNEXPECTED;
     } else {
       ObString norm_alnum_token(norm_token_len, norm_token_ptr);
-      ObString norm_lower_token;
-      if (OB_FAIL(ObCharset::tolower(cs_, norm_alnum_token, norm_lower_token, norm_allocator_))) {
+      if (!needs_casedown(norm_alnum_token)) {
+        next_token.set_string(norm_alnum_token);
       } else {
-        next_token.set_string(norm_lower_token);
+        ObString norm_lower_token;
+        if (OB_FAIL(ObCharset::tolower(cs_, norm_alnum_token, norm_lower_token, norm_allocator_))) {
+        } else {
+          next_token.set_string(norm_lower_token);
+        }
       }
     }
   }

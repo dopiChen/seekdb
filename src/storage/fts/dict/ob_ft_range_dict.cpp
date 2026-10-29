@@ -44,6 +44,23 @@ namespace oceanbase
 namespace storage
 {
 
+namespace
+{
+// The range boundaries and the lookup word are single UTF-8 characters, and
+// utf8mb4_bin orders characters by code point, which is the same as the
+// lexicographic order of their valid UTF-8 encodings. Comparing the bytes
+// directly avoids the generic collation dispatch (charset lookup, argument
+// validation and multibyte decoding) on this per-character hot path.
+inline int cmp_utf8mb4_bin_single_char(const ObString &l, const ObString &r)
+{
+  const int64_t cmp_len = MIN(l.length(), r.length());
+  int cmp_ret = (cmp_len > 0) ? MEMCMP(l.ptr(), r.ptr(), cmp_len) : 0;
+  if (0 == cmp_ret) {
+    cmp_ret = (l.length() < r.length()) ? -1 : ((l.length() > r.length()) ? 1 : 0);
+  }
+  return cmp_ret;
+}
+} // namespace
 
 int ObFTRangeDict::build_cache_from_ik_dict(const ObFTDictDesc &desc, ObFTCacheRangeContainer &range_container)
 {
@@ -386,14 +403,12 @@ bool ObFTRangeDict::can_use_ordered_lookup() const
     // starts must be ascending and the previous range must end before this one
     // starts, otherwise one word could fall into several ranges and a linear scan
     // would not be equivalent to a binary search.
-    if (ObCharset::strcmp(ObCollationType::CS_TYPE_UTF8MB4_BIN,
-                          range_dicts_[i - 1].end_.get_word(),
-                          range_dicts_[i].start_.get_word())
+    if (cmp_utf8mb4_bin_single_char(range_dicts_[i - 1].end_.get_word(),
+                                    range_dicts_[i].start_.get_word())
         >= 0) {
       is_ordered = false;
-    } else if (ObCharset::strcmp(ObCollationType::CS_TYPE_UTF8MB4_BIN,
-                                 range_dicts_[i].start_.get_word(),
-                                 range_dicts_[i - 1].start_.get_word())
+    } else if (cmp_utf8mb4_bin_single_char(range_dicts_[i].start_.get_word(),
+                                           range_dicts_[i - 1].start_.get_word())
                < 0) {
       is_ordered = false;
     }
@@ -413,10 +428,7 @@ int ObFTRangeDict::find_first_char_range(const ObString &single_word, ObIFTDict 
     int64_t hit_idx = -1;
     while (left <= right) {
       const int64_t mid = left + ((right - left) >> 1);
-      if (ObCharset::strcmp(ObCollationType::CS_TYPE_UTF8MB4_BIN,
-                            range_dicts_[mid].start_.get_word(),
-                            single_word)
-          <= 0) {
+      if (cmp_utf8mb4_bin_single_char(range_dicts_[mid].start_.get_word(), single_word) <= 0) {
         hit_idx = mid;
         left = mid + 1;
       } else {
@@ -424,9 +436,7 @@ int ObFTRangeDict::find_first_char_range(const ObString &single_word, ObIFTDict 
       }
     }
     if (hit_idx >= 0
-        && ObCharset::strcmp(ObCollationType::CS_TYPE_UTF8MB4_BIN,
-                             range_dicts_[hit_idx].end_.get_word(),
-                             single_word)
+        && cmp_utf8mb4_bin_single_char(range_dicts_[hit_idx].end_.get_word(), single_word)
                >= 0) {
       dict = range_dicts_[hit_idx].dict_;
       found = true;
@@ -437,14 +447,8 @@ int ObFTRangeDict::find_first_char_range(const ObString &single_word, ObIFTDict 
     return ret;
   }
   for (int i = 0; OB_SUCC(ret) && !found && i < range_dicts_.size(); ++i) {
-    if (ObCharset::strcmp(ObCollationType::CS_TYPE_UTF8MB4_BIN,
-                          range_dicts_[i].start_.get_word(),
-                          single_word)
-            <= 0
-        && ObCharset::strcmp(ObCollationType::CS_TYPE_UTF8MB4_BIN,
-                             range_dicts_[i].end_.get_word(),
-                             single_word)
-               >= 0) {
+    if (cmp_utf8mb4_bin_single_char(range_dicts_[i].start_.get_word(), single_word) <= 0
+        && cmp_utf8mb4_bin_single_char(range_dicts_[i].end_.get_word(), single_word) >= 0) {
       dict = range_dicts_[i].dict_;
       found = true;
     }

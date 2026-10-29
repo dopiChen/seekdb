@@ -303,14 +303,21 @@ int ObArrayHashMap::find(const ObFTSingleWord &word, ObFTWordCode &code) const
 {
   int ret = OB_ENTRY_NOT_EXIST;
   uint64_t hash = word.get_word().hash();
-  uint64_t index = hash % header_.capacity_;
+  const uint64_t capacity = header_.capacity_;
+  uint64_t index = hash % capacity;
   while (header_.data[index].used) {
     if (header_.data[index].word == word) {
       code = header_.data[index].code;
       ret = OB_SUCCESS;
       break;
     } else {
-      index = (index + 3) % header_.capacity_;
+      // capacity is much larger than the probe step, so wrapping with a
+      // subtraction is equivalent to a modulo but avoids a 64-bit division on
+      // the per-character lookup path.
+      index += 3;
+      if (OB_UNLIKELY(index >= capacity)) {
+        index -= capacity;
+      }
     }
   }
   return ret;
@@ -320,9 +327,13 @@ int ObArrayHashMap::insert(const ObString &key, ObFTWordCode code)
 {
   int ret = OB_SUCCESS;
   uint64_t hash = key.hash();
-  uint64_t index = hash % header_.capacity_;
+  const uint64_t capacity = header_.capacity_;
+  uint64_t index = hash % capacity;
   while (header_.data[index].used) {
-    index = (index + 3) % header_.capacity_;
+    index += 3;
+    if (OB_UNLIKELY(index >= capacity)) {
+      index -= capacity;
+    }
   }
 
   header_.data[index].code = code;

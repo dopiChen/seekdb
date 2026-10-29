@@ -27,6 +27,23 @@ namespace oceanbase
 namespace storage
 {
 
+namespace
+{
+// ObCharset::tolower() always materializes a converted copy, even when the input
+// is already lower case.  The tokenizer hot path mostly sees CJK words and lower
+// case ASCII, so detect the cases where the conversion is a no-op and skip it.
+inline bool needs_casedown(const ObString &str)
+{
+  const unsigned char *ptr = reinterpret_cast<const unsigned char *>(str.ptr());
+  for (int64_t i = 0; i < str.length(); ++i) {
+    if (ptr[i] >= 0x80 || (ptr[i] >= 'A' && ptr[i] <= 'Z')) {
+      return true;
+    }
+  }
+  return false;
+}
+} // namespace
+
 ////////////////////////////////////////////////////////////////////////////////
 // class ObStopWordChecker
 ObStopWordChecker::~ObStopWordChecker()
@@ -74,16 +91,26 @@ void ObStopWordChecker::destroy()
 int ObStopWordChecker::check_stopword(const ObFTWord &word, bool &is_stopword)
 {
   int ret = OB_SUCCESS;
-  
-  
-  common::ObArenaAllocator allocator(lib::ObMemAttr("ChkStopWord"));
   if (OB_UNLIKELY(!inited_)) {
     ret = OB_NOT_INIT;
   } else if (OB_UNLIKELY(word.empty())) {
     ret = OB_INVALID_ARGUMENT;
+  } else if (word.get_collation_type() == stopword_type_.get_collation_type()) {
+    // Same collation: the conversion below would be the identity, so look the
+    // word up directly and skip the temporary allocator on the per-token path.
+    ret = stopword_set_.exist_refactored(word);
+    if (OB_HASH_NOT_EXIST == ret) {
+      is_stopword = false;
+      ret = OB_SUCCESS;
+    } else if (OB_HASH_EXIST == ret) {
+      is_stopword = true;
+      ret = OB_SUCCESS;
+    } else if (OB_SUCC(ret)) {
+      ret = OB_ERR_UNEXPECTED;
+    }
   } else {
+    common::ObArenaAllocator allocator(lib::ObMemAttr("ChkStopWord"));
     common::ObString cmp_str;
-    // do nothing set out with in if type is the same.
     if (OB_FAIL(common::ObCharset::charset_convert(
                                        allocator,
                                        word.get_word().get_string(),
@@ -163,7 +190,7 @@ int ObAddWord::casedown_word(const ObFTWord &src, ObFTWord &dst)
   int ret = OB_SUCCESS;
   if (OB_UNLIKELY(src.empty())) {
     ret = OB_INVALID_ARGUMENT;
-  } else if (flag_.casedown()) {
+  } else if (flag_.casedown() && needs_casedown(src.get_word().get_string())) {
     ObString dst_str;
     if (OB_FAIL(ObCharset::tolower(
                     word_meta_.get_collation_type(),

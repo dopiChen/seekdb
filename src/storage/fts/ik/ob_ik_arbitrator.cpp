@@ -126,9 +126,7 @@ int ObIKArbitrator::output_result(TokenizeContext &ctx)
                                                          type))) {
     } else if (ObFTCharUtil::CharType::USELESS == type) {
       current += char_len; // skip useless char
-    } else if (OB_FAIL(chains_.get_refactored(current, chain)) && OB_HASH_NOT_EXIST != ret) {
-    } else if (OB_HASH_NOT_EXIST == ret) {
-      ret = OB_SUCCESS;
+    } else if (OB_ISNULL(chain = find_chain(current))) {
       if (!keep_single()) {
         // skip single word
       } else {
@@ -301,15 +299,48 @@ int ObIKArbitrator::remove_conflict(const ObIKToken &token, ObIKTokenChain *opti
 int ObIKArbitrator::prepare(TokenizeContext &ctx)
 {
   int ret = OB_SUCCESS;
-
-  int cal_bucket_num = MAX(ctx.fulltext_len() / 100, 10);
-  cal_bucket_num = MIN(cal_bucket_num, 100);
-  if (OB_FAIL(chains_.create(cal_bucket_num, ObMemAttr("IK ARBITRATE")))) {
-  }
+  UNUSED(ctx);
+  reuse();
   return ret;
 }
 
-ObIKArbitrator::ObIKArbitrator() : alloc_(lib::ObMemAttr("IK Arbitrator")) {}
+void ObIKArbitrator::reuse()
+{
+  chains_.reuse();
+  chain_cursor_ = 0;
+  is_sorted_ = true;
+  alloc_.reuse();
+}
+
+ObIKArbitrator::ObIKArbitrator()
+    : alloc_(lib::ObMemAttr("IK Arbitrator")), chains_(), chain_cursor_(0), is_sorted_(true)
+{
+}
+
+ObIKTokenChain *ObIKArbitrator::find_chain(const int64_t offset)
+{
+  ObIKTokenChain *chain = nullptr;
+  if (OB_LIKELY(is_sorted_)) {
+    // min_offset() of the chains is strictly increasing, and output_result()
+    // walks the text forward, so the cursor never needs to move backwards.
+    while (chain_cursor_ < chains_.count()
+           && chains_.at(chain_cursor_)->min_offset() < offset) {
+      ++chain_cursor_;
+    }
+    if (chain_cursor_ < chains_.count()
+        && chains_.at(chain_cursor_)->min_offset() == offset) {
+      chain = chains_.at(chain_cursor_);
+    }
+  } else {
+    for (int64_t i = 0; i < chains_.count(); ++i) {
+      if (chains_.at(i)->min_offset() == offset) {
+        chain = chains_.at(i);
+        break;
+      }
+    }
+  }
+  return chain;
+}
 
 int ObIKArbitrator::add_chain(ObIKTokenChain *chain)
 {
@@ -318,14 +349,22 @@ int ObIKArbitrator::add_chain(ObIKTokenChain *chain)
     ret = OB_INVALID_ARGUMENT;
   } else if (chain->list().is_empty()) {
     // no need to add empty chain
-  } else if (OB_FAIL(chains_.set_refactored(chain->min_offset(), chain))) {
+  } else if (OB_FAIL(chains_.push_back(chain))) {
+  } else if (OB_UNLIKELY(is_sorted_ && chains_.count() > 1
+                         && chains_.at(chains_.count() - 2)->min_offset()
+                              > chain->min_offset())) {
+    // Defensive: fall back to a linear lookup if the order is ever violated.
+    is_sorted_ = false;
+    LOG_WARN("unexpected chain order, fallback to linear lookup", K(chain_cursor_),
+             "prev_offset", chains_.at(chains_.count() - 2)->min_offset(),
+             "cur_offset", chain->min_offset());
   }
   return ret;
 }
 
 ObIKArbitrator::~ObIKArbitrator()
 {
-  chains_.destroy();
+  chains_.reset();
   alloc_.reset();
 }
 } // namespace storage

@@ -18,7 +18,7 @@
 #define _OCEANBASE_STORAGE_FTS_IK_OB_IK_ARBITRATOR_H_
 
 #include "lib/allocator/page_arena.h"
-#include "lib/hash/ob_hashmap.h"
+#include "lib/container/ob_se_array.h"
 #include "lib/utility/ob_macro_utils.h"
 #include "storage/fts/ik/ob_ik_token.h"
 
@@ -38,10 +38,16 @@ public:
 
   int output_result(TokenizeContext &ctx);
 
+  // Release the memory of the previous batch but keep the arena pages and the
+  // chain array capacity, so that a parser can reuse this object batch by batch.
+  void reuse();
+
 private:
   int prepare(TokenizeContext &ctx);
 
   int add_chain(ObIKTokenChain *chain);
+
+  ObIKTokenChain *find_chain(const int64_t offset);
 
   int optimize(TokenizeContext &ctx,
                ObIKTokenChain *option,
@@ -61,7 +67,13 @@ private:
 
 private:
   ObArenaAllocator alloc_;
-  hash::ObHashMap<int64_t, ObIKTokenChain *> chains_;
+  // Chains are appended in the order of their min_offset(), which is strictly
+  // increasing, so a monotonically advanced cursor is enough to look them up in
+  // output_result(). This avoids rebuilding a hash table (and taking its write
+  // latch for every chain) on each batch.
+  ObSEArray<ObIKTokenChain *, 16> chains_;
+  int64_t chain_cursor_;
+  bool is_sorted_;
 
 private:
   DISALLOW_COPY_AND_ASSIGN(ObIKArbitrator);
