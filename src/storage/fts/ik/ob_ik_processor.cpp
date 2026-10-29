@@ -85,38 +85,57 @@ int TokenizeContext::reset_resource()
   return OB_SUCCESS;
 }
 
-int TokenizeContext::current_char(const char *&ch, uint8_t &char_len)
-{
-  int ret = OB_SUCCESS;
-  if (cursor_ >= fulltext_len_) {
-    ret = OB_ITER_END;
-  } else {
-    ch = fulltext_ + cursor_;
-    char_len = next_char_len_;
-  }
-  return ret;
-}
-
-int TokenizeContext::current_char_type(ObFTCharUtil::CharType &type)
-{
-  int ret = OB_SUCCESS;
-  if (cursor_ >= fulltext_len_) {
-    ret = OB_ITER_END;
-  } else {
-    type = next_char_type_;
-  }
-  return ret;
-}
-
 int TokenizeContext::prepare_next_char()
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(ObCharset::first_valid_char(coll_type_,
-                                          fulltext_ + cursor_,
-                                          fulltext_len_ - cursor_,
-                                          next_char_len_))) {
+  const char *cur = fulltext_ + cursor_;
+  const int64_t remain = fulltext_len_ - cursor_;
+  bool handled = false;
+  // Fast path: for well formed UTF-8 the length and the character class follow
+  // directly from the leading byte, so the generic charset dispatch (a function
+  // pointer call plus argument validation per character) can be skipped. Every
+  // sequence this shortcut does not recognise falls back to the charset
+  // routines, so the classification stays byte for byte identical.
+  if (OB_LIKELY(common::CHARSET_UTF8MB4 == cs_type_ && remain > 0)) {
+    const unsigned char b0 = static_cast<unsigned char>(cur[0]);
+    if (b0 < 0x80) {
+      next_char_len_ = 1;
+      if ((b0 >= 0x41 && b0 <= 0x5a) || (b0 >= 0x61 && b0 <= 0x7a)) {
+        next_char_type_ = ObFTCharUtil::CharType::ENGLISH_LETTER;
+      } else if (b0 >= 0x30 && b0 <= 0x39) {
+        next_char_type_ = ObFTCharUtil::CharType::ARABIC_LETTER;
+      } else {
+        next_char_type_ = ObFTCharUtil::CharType::USELESS;
+      }
+      handled = true;
+    } else if (b0 >= 0xE4 && b0 <= 0xE9 && remain >= 3) {
+      // U+4000..U+9FFF, the block that holds the CJK unified ideographs.
+      const unsigned char b1 = static_cast<unsigned char>(cur[1]);
+      const unsigned char b2 = static_cast<unsigned char>(cur[2]);
+      if (OB_LIKELY(0x80 == (b1 & 0xC0) && 0x80 == (b2 & 0xC0))) {
+        const ob_wc_t cp = ((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F);
+        next_char_len_ = 3;
+        next_char_type_ = ObUnicodeBlockUtils::is_chinese(cp)
+                              ? ObFTCharUtil::CharType::CHINESE
+                              : ObFTCharUtil::CharType::USELESS;
+        handled = true;
+      }
+    } else if (b0 >= 0xC2 && b0 <= 0xDF && remain >= 2) {
+      // U+0080..U+07FF: no letter, digit or CJK block can appear here.
+      if (OB_LIKELY(0x80 == (static_cast<unsigned char>(cur[1]) & 0xC0))) {
+        next_char_len_ = 2;
+        next_char_type_ = ObFTCharUtil::CharType::USELESS;
+        handled = true;
+      }
+    }
+  }
+  if (OB_LIKELY(handled)) {
+  } else if (OB_FAIL(ObCharset::first_valid_char(coll_type_,
+                                                cur,
+                                                remain,
+                                                next_char_len_))) {
   } else if (OB_FAIL(ObFTCharUtil::classify_char(cs_type_,
-                                                fulltext_ + cursor_,
+                                                cur,
                                                 next_char_len_,
                                                 next_char_type_))) {
   }
@@ -144,20 +163,6 @@ int TokenizeContext::step_next()
   }
   return ret;
 }
-
-ObCollationType TokenizeContext::collation() const { return coll_type_; }
-
-int64_t TokenizeContext::get_end_cursor() const { return cursor_ + next_char_len_; }
-
-const char *TokenizeContext::fulltext() const { return fulltext_; }
-
-int64_t TokenizeContext::fulltext_len() const { return fulltext_len_; }
-
-int64_t TokenizeContext::get_cursor() const { return cursor_; }
-
-bool TokenizeContext::is_last() const { return cursor_ + next_char_len_ >= fulltext_len_; }
-
-bool TokenizeContext::iter_end() const { return cursor_ >= fulltext_len_; }
 
 bool TokenizeContext::is_smart() const { return is_smart_; }
 

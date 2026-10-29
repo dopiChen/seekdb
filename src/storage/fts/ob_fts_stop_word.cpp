@@ -231,14 +231,12 @@ int ObAddWord::groupby_word(const ObFTWord &word, const int64_t word_freq)
   } else if (!flag_.groupby_word()) {
     if (OB_FAIL(word_map_.set_refactored(word, 1/*word count*/))) {
     }
-  } else if (OB_FAIL(word_map_.get_refactored(word, word_count)) && OB_HASH_NOT_EXIST != ret) {
-  } else {
-    if (OB_HASH_NOT_EXIST == ret) {
-      word_count = 1;
-    } else {
-      word_count += word_freq;
-    }
-    if (OB_FAIL(word_map_.set_refactored(word, word_count, 1/*overwrite*/))) {
+  } else if (OB_FAIL(word_map_.set_refactored(word, 1/*word count*/, 0/*no overwrite*/))) {
+    // Probe once for the common case of a word that is seen for the first time:
+    // only a repeated word has to pay for the lookup and the update.
+    if (OB_HASH_EXIST != ret) {
+    } else if (OB_FAIL(word_map_.get_refactored(word, word_count))) {
+    } else if (OB_FAIL(word_map_.set_refactored(word, word_count + word_freq, 1/*overwrite*/))) {
     }
   }
   return ret;
