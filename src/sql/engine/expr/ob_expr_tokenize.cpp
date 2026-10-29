@@ -18,6 +18,7 @@
 
 #include "lib/alloc/alloc_struct.h"
 #include "lib/allocator/page_arena.h"
+#include "lib/lock/ob_mutex.h"
 #include "lib/charset/ob_charset.h"
 #include "common/json_type/ob_json_base.h"
 #include "common/json_type/ob_json_tree.h"
@@ -39,6 +40,129 @@ namespace oceanbase
 {
 namespace sql
 {
+namespace
+{
+// TOKENIZE() and the fulltext index build path reform the parser properties
+// once per document. When the caller does not pass any property (the common
+// case) the reform only materializes the built-in default property set of the
+// parser: it builds a json tree, serializes the tree into a string and lets
+// ObFTParseHelper parse that very string again. For a fixed parser name the
+// result never changes, so memoize it in a tiny table and skip the whole
+// json round trip.
+//
+// The table has a fixed number of slots, entries are copied into a private
+// arena and are immutable once published, so readers never need a lock. When
+// the table is full or a name is too long the caller simply keeps doing the
+// work as before.
+class ObTokenizeDefaultPropsCache
+{
+public:
+  static const int64_t SLOT_COUNT = 8;
+  static const int64_t MAX_NAME_LEN = storage::OB_FT_PARSER_NAME_LENGTH - 1;
+
+  static ObTokenizeDefaultPropsCache &instance()
+  {
+    static ObTokenizeDefaultPropsCache cache;
+    return cache;
+  }
+
+  bool get(const ObString &parser_name, ObString &properties)
+  {
+    bool found = false;
+    if (!parser_name.empty()) {
+      for (int64_t i = 0; !found && i < SLOT_COUNT; ++i) {
+        Slot &slot = slots_[i];
+        if (Slot::PUBLISHED == ATOMIC_LOAD(&slot.published_)) {
+          if (matches(slot, parser_name)) {
+            properties = ObString(static_cast<int64_t>(ATOMIC_LOAD(&slot.value_len_)),
+                                  nullptr == slot.value_ ? "" : slot.value_);
+            found = true;
+          }
+        }
+      }
+    }
+    return found;
+  }
+
+  void insert(const ObString &parser_name, const ObString &properties)
+  {
+    if (parser_name.empty() || parser_name.length() > MAX_NAME_LEN) {
+      // not worth caching, the name does not fit into a fixed slot
+    } else {
+      lib::ObMutexGuard guard(lock_);
+      Slot *target = nullptr;
+      bool duplicated = false;
+      for (int64_t i = 0; nullptr == target && i < SLOT_COUNT; ++i) {
+        if (Slot::PUBLISHED == ATOMIC_LOAD(&slots_[i].published_)) {
+          duplicated = duplicated || matches(slots_[i], parser_name);
+        } else {
+          target = &slots_[i];
+        }
+      }
+      if (nullptr != target && !duplicated) {
+        const int64_t name_len = parser_name.length();
+        const int64_t value_len = properties.length();
+        char *name_buf = static_cast<char *>(alloc_.alloc(name_len + 1));
+        char *value_buf = nullptr == name_buf
+                          ? nullptr
+                          : static_cast<char *>(alloc_.alloc(value_len + 1));
+        if (nullptr != name_buf && nullptr != value_buf) {
+          MEMCPY(name_buf, parser_name.ptr(), name_len);
+          name_buf[name_len] = '\0';
+          if (value_len > 0) {
+            MEMCPY(value_buf, properties.ptr(), value_len);
+          }
+          value_buf[value_len] = '\0';
+          target->name_ = name_buf;
+          target->name_len_ = name_len;
+          target->value_ = value_buf;
+          target->value_len_ = value_len;
+          // publish last, the stores above must be visible before the entry
+          // can be seen by readers
+          ATOMIC_STORE(&target->published_, Slot::PUBLISHED);
+        }
+      }
+    }
+  }
+
+private:
+  struct Slot
+  {
+    static const int32_t EMPTY = 0;
+    static const int32_t PUBLISHED = 1;
+    Slot() : name_(nullptr), name_len_(0), value_(nullptr), value_len_(0), published_(EMPTY) {}
+    const char *name_;
+    int64_t name_len_;
+    const char *value_;
+    int64_t value_len_;
+    int32_t published_;
+  };
+
+  ObTokenizeDefaultPropsCache()
+      : lock_(),
+        alloc_(common::ObMemAttr("TokPropsCache")),
+        slots_()
+  {
+  }
+  ~ObTokenizeDefaultPropsCache() {}
+
+  static bool matches(const Slot &slot, const ObString &parser_name)
+  {
+    return parser_name.length() == slot.name_len_
+           && nullptr != slot.name_
+           && 0 == MEMCMP(slot.name_, parser_name.ptr(), parser_name.length());
+  }
+
+  lib::ObMutex lock_;
+  common::ObArenaAllocator alloc_;
+  Slot slots_[SLOT_COUNT];
+
+private:
+  DISALLOW_COPY_AND_ASSIGN(ObTokenizeDefaultPropsCache);
+};
+
+} // end of anonymous namespace
+
 ObExprTokenize::ObExprTokenize(common::ObIAllocator &alloc)
     : ObStringExprOperator(alloc,
                            T_FUN_TOKENIZE,
@@ -375,15 +499,25 @@ int ObExprTokenize::parse_parser_properties(const ObExpr &expr,
 int ObExprTokenize::TokenizeParam::reform_parser_properties(const ObString &properties)
 {
   int ret = OB_SUCCESS;
-  storage::ObFTParserJsonProps parser_properties;
+  const bool cacheable = properties.empty();
+  ObString cached_properties;
 
-  if (OB_FAIL(parser_properties.init())) {
-  } else if (OB_FAIL(parser_properties.parse_from_valid_str(properties))) {
-    LOG_USER_ERROR(OB_INVALID_ARGUMENT, "parser properties invalid.");
-  } else if (OB_FAIL(parser_properties.rebuild_props_for_ddl(parser_name_,
-                                                             ObCollationType::CS_TYPE_UTF8MB4_BIN,
-                                                             true))) {
-  } else if (OB_FAIL(parser_properties.to_format_json(allocator_, properties_))) {
+  if (cacheable
+      && ObTokenizeDefaultPropsCache::instance().get(parser_name_, cached_properties)) {
+    properties_ = cached_properties;
+  } else {
+    storage::ObFTParserJsonProps parser_properties;
+
+    if (OB_FAIL(parser_properties.init())) {
+    } else if (OB_FAIL(parser_properties.parse_from_valid_str(properties))) {
+      LOG_USER_ERROR(OB_INVALID_ARGUMENT, "parser properties invalid.");
+    } else if (OB_FAIL(parser_properties.rebuild_props_for_ddl(parser_name_,
+                                                               ObCollationType::CS_TYPE_UTF8MB4_BIN,
+                                                               true))) {
+    } else if (OB_FAIL(parser_properties.to_format_json(allocator_, properties_))) {
+    } else if (cacheable) {
+      ObTokenizeDefaultPropsCache::instance().insert(parser_name_, properties_);
+    }
   }
 
   return ret;
