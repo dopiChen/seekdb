@@ -740,6 +740,34 @@ private:
   static int init_charset_info_coll_info(ObCharsetInfo *cs, ObCharsetLoader& loader);
   static bool is_argument_valid(const ObCharsetInfo *charset_info, const char *str, int64_t str_len);
   static bool is_argument_valid(const ObCollationType &collation_type, const char *str1, int64_t str_len1, const char *str2, int64_t str_len2);
+
+  // Returns the already-initialized charset descriptor of @c collation_type, or
+  // NULL when the collation is invalid / not initialized yet.
+  //
+  // This is the lock-free read-only fast path shared by the hot string helpers
+  // below. It avoids the out-of-line get_charset_uninit() switch and the
+  // lazy-init bookkeeping inside get_charset(), both of which used to cost more
+  // than the actual comparison for short strings. Callers must fall back to
+  // get_charset() when this returns NULL so that the first-time initialization
+  // and the "unsupported collation" logging keep their original semantics.
+  static inline const ObCharsetInfo *get_charset_inited(const ObCollationType collation_type)
+  {
+    return (collation_type > CS_TYPE_INVALID && collation_type < CS_TYPE_MAX)
+           ? charset_arr_inited[collation_type]
+           : NULL;
+  }
+
+  // cheap, allocation-free version of the argument check used on the fast path.
+  // When it reports a problem we fall back to is_argument_valid() which keeps
+  // the historical "log a warning and return 0/seed" behaviour.
+  static inline bool are_compare_arguments_valid(const char *str1, int64_t str1_len,
+                                                 const char *str2, int64_t str2_len)
+  {
+    return str1_len >= 0 && str2_len >= 0
+           && !(NULL == str1 && 0 != str1_len)
+           && !(NULL == str2 && 0 != str2_len);
+  }
+
   static int init_charset_by_collation_type(const ObCollationType collation_type);
   static const ObCharsetInfo *get_charset_uninit(const ObCollationType collation_type);
 

@@ -551,14 +551,26 @@ int ObCharset::strcmp(ObCollationType collation_type,
                       int64_t str2_len)
 {
   int result = 0;
-  if (is_argument_valid(collation_type, str1, str1_len, str2, str2_len)) {
-    const ObCharsetInfo *cs = get_charset(collation_type);
-    const bool t_is_prefix = false;
+  const ObCharsetInfo *cs = get_charset_inited(collation_type);
+  const bool t_is_prefix = false;
+  if (OB_LIKELY(NULL != cs && NULL != cs->coll
+               && are_compare_arguments_valid(str1, str1_len, str2, str2_len))) {
     result = cs->coll->strnncoll(cs,
                               reinterpret_cast<const unsigned char *>(str1),
                               str1_len,
                               reinterpret_cast<const unsigned char *>(str2),
                               str2_len, t_is_prefix);
+  } else if (is_argument_valid(collation_type, str1, str1_len, str2, str2_len)) {
+    // collation is valid but its charset has not been initialized yet, pay the
+    // full path once and compare with the freshly initialized descriptor.
+    const ObCharsetInfo *init_cs = get_charset(collation_type);
+    if (OB_NOT_NULL(init_cs) && OB_NOT_NULL(init_cs->coll)) {
+      result = init_cs->coll->strnncoll(init_cs,
+                              reinterpret_cast<const unsigned char *>(str1),
+                              str1_len,
+                              reinterpret_cast<const unsigned char *>(str2),
+                              str2_len, t_is_prefix);
+    }
   }
   return result;
 }
@@ -571,14 +583,25 @@ int ObCharset::strcmpsp(ObCollationType collation_type,
                         bool cmp_endspace)
 {
   int result = 0;
-  if (is_argument_valid(collation_type, str1, str1_len, str2, str2_len)) {
-    const ObCharsetInfo *cs = get_charset(collation_type);
+  const ObCharsetInfo *cs = get_charset_inited(collation_type);
+  if (OB_LIKELY(NULL != cs && NULL != cs->coll
+               && are_compare_arguments_valid(str1, str1_len, str2, str2_len))) {
     result = cs->coll->strnncollsp(cs,
                                 reinterpret_cast<const unsigned char *>(str1),
                                 str1_len,
                                 reinterpret_cast<const unsigned char *>(str2),
                                 str2_len,
                                 cmp_endspace);
+  } else if (is_argument_valid(collation_type, str1, str1_len, str2, str2_len)) {
+    const ObCharsetInfo *init_cs = get_charset(collation_type);
+    if (OB_NOT_NULL(init_cs) && OB_NOT_NULL(init_cs->coll)) {
+      result = init_cs->coll->strnncollsp(init_cs,
+                                reinterpret_cast<const unsigned char *>(str1),
+                                str1_len,
+                                reinterpret_cast<const unsigned char *>(str2),
+                                str2_len,
+                                cmp_endspace);
+    }
   }
   return result;
 }
@@ -707,7 +730,17 @@ uint64_t ObCharset::hash(ObCollationType collation_type,
                          hash_algo hash_algo)
 {
   uint64_t ret = seed;
-  if (is_argument_valid(collation_type, str, str_len, NULL, 0)) {
+  const ObCharsetInfo *fast_cs = get_charset_inited(collation_type);
+  if (OB_LIKELY(NULL != fast_cs && NULL != fast_cs->coll && str_len >= 0
+               && !(NULL == str && 0 != str_len))) {
+    seed = 0xc6a4a7935bd1e995;
+    ulong ret_ulong = static_cast<ulong>(ret);
+    ulong seed_ulong = static_cast<ulong>(seed);
+    fast_cs->coll->hash_sort(fast_cs, reinterpret_cast<const unsigned char *>(str), str_len,
+                             &ret_ulong, &seed_ulong, calc_end_space,
+                             hash_algo);
+    ret = static_cast<uint64_t>(ret_ulong);
+  } else if (is_argument_valid(collation_type, str, str_len, NULL, 0)) {
     // since hash_sort() of MY_COLLATION_HANDLER need two intergers, one for input and output as
     // result, the other only for input as random seed, so I find 0xc6a4a7935bd1e995 from
     // murmurhash64A(), U can also find similar usage too.
