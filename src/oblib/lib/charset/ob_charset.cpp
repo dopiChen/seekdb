@@ -1741,6 +1741,39 @@ ObCollationType ObCharset::get_system_collation()
   return CS_TYPE_UTF8MB4_GENERAL_CI;
 }
 
+// Byte length of the first utf8mb4 character of [s, e), or 0 when the sequence is
+// illegal or truncated. It mirrors ob_valid_mbcharlen_utf8mb4()/ob_well_formed_len_utf8mb4()
+// (see ob_ctype_utf8.cc) which is what the well_formed_len handler of every utf8mb4
+// collation resolves to, so an illegal or truncated sequence is reported exactly the
+// same way as the out of line handler used to do.
+static inline int64_t ob_first_valid_char_len_utf8mb4(const unsigned char *s,
+                                                      const unsigned char *e)
+{
+  int64_t char_len = 0;
+  const unsigned char c = s[0];
+  if (c < 0x80) {
+    char_len = 1;
+  } else if (c < 0xc2) {               // overlong 2 bytes head
+  } else if (c < 0xe0) {               // 2 bytes
+    if (s + 2 <= e && (s[1] & 0xc0) == 0x80) {
+      char_len = 2;
+    }
+  } else if (c < 0xf0) {               // 3 bytes
+    if (s + 3 <= e && (s[1] & 0xc0) == 0x80 && (s[2] & 0xc0) == 0x80
+        && (c >= 0xe1 || s[1] >= 0xa0)) {
+      char_len = 3;
+    }
+  } else if (c < 0xf5) {               // 4 bytes
+    if (s + 4 <= e && (s[1] & 0xc0) == 0x80 && (s[2] & 0xc0) == 0x80
+        && (s[3] & 0xc0) == 0x80
+        && (c >= 0xf1 || s[1] >= 0x90)
+        && (c <= 0xf3 || s[1] <= 0x8f)) {
+      char_len = 4;
+    }
+  }
+  return char_len;
+}
+
 int ObCharset::first_valid_char(
     const ObCollationType collation_type,
     const char *buf,
@@ -1748,7 +1781,21 @@ int ObCharset::first_valid_char(
     int64_t &char_len)
 {
   int ret = OB_SUCCESS;
-  if (OB_UNLIKELY(collation_type <= CS_TYPE_INVALID ||
+  // fast path: the charset is already initialized and its well_formed_len() is the
+  // utf8mb4 one (only the utf8mb4 family has mbminlen 1 and mbmaxlen 4 here). Both the
+  // charset descriptor lookup and the handler call are avoided, they used to cost more
+  // than decoding the character itself, and this routine is called once per character
+  // by the fulltext tokenizer.
+  const ObCharsetInfo *cs = get_charset_inited(collation_type);
+  if (OB_LIKELY(NULL != cs && NULL != cs->cset && 1 == cs->mbminlen && 4 == cs->mbmaxlen
+                && NULL != buf && buf_size > 0)) {
+    const unsigned char *s = reinterpret_cast<const unsigned char *>(buf);
+    char_len = ob_first_valid_char_len_utf8mb4(s, s + buf_size);
+    if (OB_UNLIKELY(0 == char_len)) {
+      ret = OB_INVALID_ARGUMENT;
+      LOG_WARN("invalid encoding found");
+    }
+  } else if (OB_UNLIKELY(collation_type <= CS_TYPE_INVALID ||
                   collation_type >= CS_TYPE_MAX)) {
     ret = OB_ERR_UNEXPECTED;
   } else if (OB_ISNULL(get_charset(collation_type))) {
@@ -1760,11 +1807,11 @@ int ObCharset::first_valid_char(
   } else {
     int error = 0;
     int64_t len = 0;
-    const ObCharsetInfo *cs = get_charset(collation_type);
-    if (OB_ISNULL(cs->cset)) {
+    const ObCharsetInfo *slow_cs = get_charset(collation_type);
+    if (OB_ISNULL(slow_cs->cset)) {
       ret = OB_ERR_UNEXPECTED;
     } else {
-      len = static_cast<int64_t>(cs->cset->well_formed_len(cs, buf, buf + buf_size, 1, &error));
+      len = static_cast<int64_t>(slow_cs->cset->well_formed_len(slow_cs, buf, buf + buf_size, 1, &error));
       if (OB_LIKELY(0 == error)) {
         char_len = len;
       } else {
