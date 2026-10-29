@@ -52,11 +52,16 @@ private:
     OB_ASSERT(nullptr != datum);
     return *datum;
   }
+  int cmp_fallback(const ObDatum &l, const ObDatum &r, int64_t &cmp_ret);
 private:
   common::ObDatumCmpFuncType cmp_func_;
   // TODO: if memory lifetime of docid datum is guaranteed by dim_iters, we can use pointer to datum directly
   //       and avoid deep copy into merge heap here
   const ObFixedArray<const ObDatum *, ObIAllocator> *iter_ids_;
+  // Doc ids are compared with a binary collation, for which the generic
+  // comparator is much heavier than a plain memcmp (charset lookup, argument
+  // validation and collation dispatch on every comparison).
+  bool use_binary_cmp_;
   bool is_inited_;
 };
 

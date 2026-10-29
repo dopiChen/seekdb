@@ -26,6 +26,7 @@ namespace storage
 ObSRMergeCmp::ObSRMergeCmp()
   : cmp_func_(nullptr),
     iter_ids_(nullptr),
+    use_binary_cmp_(false),
     is_inited_(false)
 {
 }
@@ -39,6 +40,8 @@ int ObSRMergeCmp::init(
     ret = OB_ERR_UNEXPECTED;
   } else {
     iter_ids_ = iter_ids;
+    use_binary_cmp_ = (ObVarcharType == id_meta.type_ || ObCharType == id_meta.type_)
+                      && CS_TYPE_BINARY == id_meta.cs_type_;
     common::ObDatumBasicFuncs *basic_funcs = ObDatumFuncs::get_basic_func(id_meta.type_, id_meta.cs_type_);
     cmp_func_ = basic_funcs->null_first_cmp_;
     if (OB_ISNULL(cmp_func_)) {
@@ -58,13 +61,32 @@ int ObSRMergeCmp::cmp(
   int ret = OB_SUCCESS;
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
-  } else {
-    int tmp_ret = 0;
-    if (OB_FAIL(cmp_func_(
-            get_id_datum(l.iter_idx_), get_id_datum(r.iter_idx_), tmp_ret, nullptr))) {
-    } else {
-      cmp_ret = tmp_ret;
+  } else if (OB_LIKELY(use_binary_cmp_)) {
+    const ObDatum &l_datum = get_id_datum(l.iter_idx_);
+    const ObDatum &r_datum = get_id_datum(r.iter_idx_);
+    if (OB_LIKELY(!l_datum.is_null() && !r_datum.is_null())) {
+      const int64_t cmp_len = MIN(l_datum.len_, r_datum.len_);
+      int cmp_val = (cmp_len > 0) ? MEMCMP(l_datum.ptr_, r_datum.ptr_, cmp_len) : 0;
+      if (0 == cmp_val) {
+        cmp_val = (l_datum.len_ < r_datum.len_) ? -1 : ((l_datum.len_ > r_datum.len_) ? 1 : 0);
+      }
+      cmp_ret = cmp_val;
+    } else if (OB_FAIL(cmp_fallback(l_datum, r_datum, cmp_ret))) {
     }
+  } else {
+    if (OB_FAIL(cmp_fallback(get_id_datum(l.iter_idx_), get_id_datum(r.iter_idx_), cmp_ret))) {
+    }
+  }
+  return ret;
+}
+
+int ObSRMergeCmp::cmp_fallback(const ObDatum &l, const ObDatum &r, int64_t &cmp_ret)
+{
+  int ret = OB_SUCCESS;
+  int tmp_ret = 0;
+  if (OB_FAIL(cmp_func_(l, r, tmp_ret, nullptr))) {
+  } else {
+    cmp_ret = tmp_ret;
   }
   return ret;
 }
