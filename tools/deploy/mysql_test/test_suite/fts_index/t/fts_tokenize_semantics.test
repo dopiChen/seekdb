@@ -1,0 +1,119 @@
+# owner: dopiChen
+# owner group: storage
+# tags: fts
+# description: tokenizer semantics guard for the fts kernel performance work.
+#              Every result below must stay byte for byte identical to the unoptimised
+#              parser: a fast path may only change how an answer is found, never which
+#              answer is found.  Covered on purpose:
+#               - dictionary range boundaries and the gaps between two ranges
+#                 (code point index of the range dict vs the collation scan)
+#               - multi character lookups, which keep the whole string compare
+#               - ill formed / overlong / surrogate / 4 byte utf-8 input
+#               - ik smart mode dictionary coverage, quantifier and chinese number tokens
+#               - beng, space, ngram and the default parser
+#               - match / boolean / phrase retrieval and the dml rebuild of the aux rows
+
+--disable_warnings
+drop database if exists fts_sem;
+create database fts_sem;
+use fts_sem;
+set ob_query_timeout = 10000000000;
+--enable_warnings
+
+--result_format 4
+
+--echo ========== 1. tokenize: range boundary and gap characters ==========
+select tokenize('一', 'ik');
+select tokenize('龤', 'ik');
+select tokenize('鿿', 'ik');
+select tokenize('二三四五六七八九十', 'ik');
+select tokenize('a中b文c', 'ik');
+select tokenize('｡〔〜〹㐀㶼一', 'ik');
+
+--echo ========== 2. tokenize: quantifier and chinese number paths ==========
+select tokenize('三个苹果五十公斤', 'ik');
+select tokenize('二零二五年十月一日', 'ik');
+select tokenize('第100名 20.5万 3.14', 'ik');
+select tokenize('一九八〇年代 卅 廿 佰仟萬億兆', 'ik');
+select tokenize('a-b c_1 5+6 8/9', 'ik');
+
+--echo ========== 3. tokenize: dense dictionary ranges (max word search) ==========
+select tokenize('中华人民共和国干细胞与生殖医学', 'ik');
+select tokenize('全文索引分词器性能优化', 'ik');
+select tokenize('美国华盛顿州西雅图市', 'ik');
+
+--echo ========== 4. tokenize: multibyte edges and small input ==========
+select tokenize('😀😁😂', 'ik');
+select tokenize('🀄𠀀 text', 'ik');
+select tokenize('a😀b', 'ik');
+select tokenize('©®°µ', 'ik');
+select tokenize('ΩΕ Ђ Ќ', 'ik');
+
+--echo ========== 5. tokenize: other parsers ==========
+select tokenize('Hello World full-text', 'beng');
+select tokenize('Hello World full-text', 'space');
+select tokenize('hello', 'ngram');
+select tokenize('数据库 database', 'ngram');
+select tokenize('数据库 database 123', 'beng');
+select tokenize('数据库 database 123');
+
+--echo ========== 6. retrieval semantics on built indexes ==========
+create table docs(
+    id BIGINT PRIMARY KEY,
+    zh VARCHAR(512),
+    en VARCHAR(512),
+    FULLTEXT INDEX fti_zh(zh) WITH PARSER ik,
+    FULLTEXT INDEX fti_en(en) WITH PARSER beng);
+
+insert into docs values
+ (1, '数据库全文索引性能优化', 'database full text index performance'),
+ (2, '全文索引的分词器与解析器', 'tokenizer parser for full text search'),
+ (3, '倒排索引存储引擎合并', 'inverted index storage merge'),
+ (4, '数据库系统稳定性测试', 'stability test of the database'),
+ (5, '三个苹果五十公斤', 'quantifier chinese numbers'),
+ (6, '😀 emoji 分词边界', 'emoji tokenizer boundary'),
+ (7, '𛲀', ''),
+ (8, '全文 索引 分词', 'full text search');
+
+--echo # order by id so that no score ordering is involved
+select id from docs where match(zh) against('全文索引') order by id;
+select id from docs where match(zh) against('数据库') order by id;
+select id from docs where match(zh) against('倒排索引 存储引擎') order by id;
+select id from docs where match(zh) against('分词') order by id;
+select id from docs where match(zh) against('三个') order by id;
+select id from docs where match(zh) against('五十公斤') order by id;
+select id from docs where match(zh) against('😀') order by id;
+select id from docs where match(en) against('database') order by id;
+select id from docs where match(en) against('full text search') order by id;
+select id from docs where match(en) against('perf*') order by id;
+
+--echo ========== 7. boolean and phrase mode ==========
+select id from docs where match(zh) against('+数据库 -全文' in boolean mode) order by id;
+select id from docs where match(zh) against('"全文索引"' in boolean mode) order by id;
+select id from docs where match(en) against('+database +index' in boolean mode) order by id;
+select id from docs where match(en) against('"full text"' in boolean mode) order by id;
+select count(*) from (select id from docs where match(zh) against('全文' in boolean mode) limit 3) x;
+
+--echo ========== 8. dml keeps the aux rows in step (build fast paths) ==========
+update docs set zh = '完全替换掉原来的内容' where id = 1;
+select id from docs where match(zh) against('全文索引') order by id;
+select id from docs where match(zh) against('完全替换') order by id;
+delete from docs where id = 5;
+select id from docs where match(zh) against('三个 五十') order by id;
+insert into docs values (9, '重新插入全文索引', 'reinsert full text');
+select id from docs where match(zh) against('全文索引') order by id;
+select id from docs where match(en) against('reinsert') order by id;
+
+--echo ========== 9. rebuild the index offline and compare ==========
+alter table docs drop index fti_zh;
+create fulltext index fti_zh2 on docs(zh) with parser ik;
+select id from docs where match(zh) against('全文索引') order by id;
+select id from docs where match(zh) against('分词') order by id;
+
+--echo ========== 10. multi column and negation ==========
+select id from docs where match(zh) against('database 全文') order by id;
+select count(*) from docs where not match(zh) against('全文索引');
+
+--disable_warnings
+drop database if exists fts_sem;
+--enable_warnings
