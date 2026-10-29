@@ -1,0 +1,352 @@
+drop database if exists fts_sem;
+create database fts_sem;
+use fts_sem;
+set ob_query_timeout = 10000000000;
+result_format: 4
+========== 1. tokenize: range boundary and gap characters ==========
+select tokenize('一', 'ik');
++-----------------------+
+| tokenize('一', 'ik')  |
++-----------------------+
+| ["一"]                |
++-----------------------+
+select tokenize('龤', 'ik');
++-----------------------+
+| tokenize('龤', 'ik')  |
++-----------------------+
+| ["龤"]                |
++-----------------------+
+select tokenize('鿿', 'ik');
++-----------------------+
+| tokenize('鿿', 'ik')   |
++-----------------------+
+| ["鿿"]                 |
++-----------------------+
+select tokenize('二三四五六七八九十', 'ik');
++-----------------------------------------------+
+| tokenize('二三四五六七八九十', 'ik')          |
++-----------------------------------------------+
+| ["二三四五六七八九十"]                        |
++-----------------------------------------------+
+select tokenize('a中b文c', 'ik');
++-------------------------------+
+| tokenize('a中b文c', 'ik')     |
++-------------------------------+
+| ["文", "a", "中", "c", "b"]   |
++-------------------------------+
+select tokenize('｡〔〜〹㐀㶼一', 'ik');
++-----------------------------------------+
+| tokenize('｡〔〜〹㐀㶼一', 'ik')         |
++-----------------------------------------+
+| ["｡", "㐀", "㶼", "一"]                 |
++-----------------------------------------+
+
+========== 2. tokenize: quantifier and chinese number paths ==========
+select tokenize('三个苹果五十公斤', 'ik');
++--------------------------------------------+
+| tokenize('三个苹果五十公斤', 'ik')         |
++--------------------------------------------+
+| ["五十公斤", "苹果", "三个"]               |
++--------------------------------------------+
+select tokenize('二零二五年十月一日', 'ik');
++-----------------------------------------------+
+| tokenize('二零二五年十月一日', 'ik')          |
++-----------------------------------------------+
+| ["十月", "二零二五年", "一日"]                |
++-----------------------------------------------+
+select tokenize('第100名 20.5万 3.14', 'ik');
++------------------------------------------+
+| tokenize('第100名 20.5万 3.14', 'ik')    |
++------------------------------------------+
+| ["3.14", "20.5万", "第", "100名"]        |
++------------------------------------------+
+select tokenize('一九八〇年代 卅 廿 佰仟萬億兆', 'ik');
++--------------------------------------------------------------+
+| tokenize('一九八〇年代 卅 廿 佰仟萬億兆', 'ik')              |
++--------------------------------------------------------------+
+| ["卅", "年代", "廿", "一九八", "佰仟萬億兆"]                 |
++--------------------------------------------------------------+
+select tokenize('a-b c_1 5+6 8/9', 'ik');
++-----------------------------------+
+| tokenize('a-b c_1 5+6 8/9', 'ik') |
++-----------------------------------+
+| ["8", "a-b", "9", "5+6", "c_1"]   |
++-----------------------------------+
+
+========== 3. tokenize: dense dictionary ranges (max word search) ==========
+select tokenize('中华人民共和国干细胞与生殖医学', 'ik');
++-------------------------------------------------------------------+
+| tokenize('中华人民共和国干细胞与生殖医学', 'ik')                  |
++-------------------------------------------------------------------+
+| ["医学", "干细胞", "与", "中华人民共和国", "生殖"]                |
++-------------------------------------------------------------------+
+select tokenize('全文索引分词器性能优化', 'ik');
++-----------------------------------------------------+
+| tokenize('全文索引分词器性能优化', 'ik')            |
++-----------------------------------------------------+
+| ["性能", "分词器", "优化", "全文索引"]              |
++-----------------------------------------------------+
+select tokenize('美国华盛顿州西雅图市', 'ik');
++--------------------------------------------------+
+| tokenize('美国华盛顿州西雅图市', 'ik')           |
++--------------------------------------------------+
+| ["华盛顿州", "美国", "西雅图", "市"]             |
++--------------------------------------------------+
+
+========== 4. tokenize: multibyte edges and small input ==========
+select tokenize('😀😁😂', 'ik');
++--------------------------------+
+| tokenize('😀😁😂', 'ik')             |
++--------------------------------+
+| []                             |
++--------------------------------+
+select tokenize('🀄𠀀 text', 'ik');
++---------------------------------+
+| tokenize('🀄𠀀 text', 'ik')         |
++---------------------------------+
+| ["text"]                        |
++---------------------------------+
+select tokenize('a😀b', 'ik');
++--------------------------+
+| tokenize('a😀b', 'ik')     |
++--------------------------+
+| ["a", "b"]               |
++--------------------------+
+select tokenize('©®°µ', 'ik');
++----------------------------+
+| tokenize('©®°µ', 'ik')     |
++----------------------------+
+| []                         |
++----------------------------+
+select tokenize('ΩΕ Ђ Ќ', 'ik');
++------------------------------+
+| tokenize('ΩΕ Ђ Ќ', 'ik')     |
++------------------------------+
+| []                           |
++------------------------------+
+
+========== 5. tokenize: other parsers ==========
+select tokenize('Hello World full-text', 'beng');
++-------------------------------------------+
+| tokenize('Hello World full-text', 'beng') |
++-------------------------------------------+
+| ["text", "world", "full", "hello"]        |
++-------------------------------------------+
+select tokenize('Hello World full-text', 'space');
++--------------------------------------------+
+| tokenize('Hello World full-text', 'space') |
++--------------------------------------------+
+| ["text", "world", "full", "hello"]         |
++--------------------------------------------+
+select tokenize('hello', 'ngram');
++----------------------------+
+| tokenize('hello', 'ngram') |
++----------------------------+
+| ["lo", "he", "ll", "el"]   |
++----------------------------+
+select tokenize('数据库 database', 'ngram');
++----------------------------------------------------------------+
+| tokenize('数据库 database', 'ngram')                           |
++----------------------------------------------------------------+
+| ["ab", "数据", "at", "se", "da", "ba", "ta", "据库", "as"]     |
++----------------------------------------------------------------+
+select tokenize('数据库 database 123', 'beng');
++--------------------------------------------+
+| tokenize('数据库 database 123', 'beng')    |
++--------------------------------------------+
+| ["123", "database", "数据库"]              |
++--------------------------------------------+
+select tokenize('数据库 database 123');
++------------------------------------+
+| tokenize('数据库 database 123')    |
++------------------------------------+
+| ["123", "database", "数据库"]      |
++------------------------------------+
+
+========== 6. retrieval semantics on built indexes ==========
+create table docs(
+    id BIGINT PRIMARY KEY,
+    zh VARCHAR(512),
+    en VARCHAR(512),
+    FULLTEXT INDEX fti_zh(zh) WITH PARSER ik,
+    FULLTEXT INDEX fti_en(en) WITH PARSER beng);
+
+insert into docs values
+ (1, '数据库全文索引性能优化', 'database full text index performance'),
+ (2, '全文索引的分词器与解析器', 'tokenizer parser for full text search'),
+ (3, '倒排索引存储引擎合并', 'inverted index storage merge'),
+ (4, '数据库系统稳定性测试', 'stability test of the database'),
+ (5, '三个苹果五十公斤', 'quantifier chinese numbers'),
+ (6, '😀 emoji 分词边界', 'emoji tokenizer boundary'),
+ (7, '𛲀', ''),
+ (8, '全文 索引 分词', 'full text search');
+
+# order by id so that no score ordering is involved
+select id from docs where match(zh) against('全文索引') order by id;
++----+
+| id |
++----+
+|  1 |
+|  2 |
++----+
+select id from docs where match(zh) against('数据库') order by id;
++----+
+| id |
++----+
+|  1 |
++----+
+select id from docs where match(zh) against('倒排索引 存储引擎') order by id;
++----+
+| id |
++----+
+|  3 |
+|  8 |
++----+
+select id from docs where match(zh) against('分词') order by id;
++----+
+| id |
++----+
+|  6 |
+|  8 |
++----+
+select id from docs where match(zh) against('三个') order by id;
++----+
+| id |
++----+
+|  5 |
++----+
+select id from docs where match(zh) against('五十公斤') order by id;
++----+
+| id |
++----+
+|  5 |
++----+
+select id from docs where match(zh) against('😀') order by id;
++----+
+| id |
++----+
++----+
+select id from docs where match(en) against('database') order by id;
++----+
+| id |
++----+
+|  1 |
+|  4 |
++----+
+select id from docs where match(en) against('full text search') order by id;
++----+
+| id |
++----+
+|  1 |
+|  2 |
+|  8 |
++----+
+select id from docs where match(en) against('perf*') order by id;
++----+
+| id |
++----+
++----+
+
+========== 7. boolean and phrase mode ==========
+select id from docs where match(zh) against('+数据库 -全文' in boolean mode) order by id;
++----+
+| id |
++----+
+|  1 |
++----+
+select id from docs where match(zh) against('"全文索引"' in boolean mode) order by id;
++----+
+| id |
++----+
+|  1 |
+|  2 |
++----+
+select id from docs where match(en) against('+database +index' in boolean mode) order by id;
++----+
+| id |
++----+
+|  1 |
++----+
+select id from docs where match(en) against('"full text"' in boolean mode) order by id;
++----+
+| id |
++----+
+|  1 |
+|  2 |
+|  8 |
++----+
+select count(*) from (select id from docs where match(zh) against('全文' in boolean mode) limit 3) x;
++----------+
+| count(*) |
++----------+
+|        1 |
++----------+
+
+========== 8. dml keeps the aux rows in step (build fast paths) ==========
+update docs set zh = '完全替换掉原来的内容' where id = 1;
+select id from docs where match(zh) against('全文索引') order by id;
++----+
+| id |
++----+
+|  2 |
++----+
+select id from docs where match(zh) against('完全替换') order by id;
++----+
+| id |
++----+
+|  1 |
++----+
+delete from docs where id = 5;
+select id from docs where match(zh) against('三个 五十') order by id;
++----+
+| id |
++----+
++----+
+insert into docs values (9, '重新插入全文索引', 'reinsert full text');
+select id from docs where match(zh) against('全文索引') order by id;
++----+
+| id |
++----+
+|  2 |
+|  9 |
++----+
+select id from docs where match(en) against('reinsert') order by id;
++----+
+| id |
++----+
+|  9 |
++----+
+
+========== 9. rebuild the index offline and compare ==========
+alter table docs drop index fti_zh;
+create fulltext index fti_zh2 on docs(zh) with parser ik;
+select id from docs where match(zh) against('全文索引') order by id;
++----+
+| id |
++----+
+|  2 |
+|  9 |
++----+
+select id from docs where match(zh) against('分词') order by id;
++----+
+| id |
++----+
+|  6 |
+|  8 |
++----+
+
+========== 10. multi column and negation ==========
+select id from docs where match(zh) against('database 全文') order by id;
++----+
+| id |
++----+
+|  8 |
++----+
+select count(*) from docs where not match(zh) against('全文索引');
++----------+
+| count(*) |
++----------+
+|        6 |
++----------+
+
+drop database if exists fts_sem;
