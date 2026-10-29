@@ -46,7 +46,8 @@ public:
         cache_stop_(allocator),
         dict_main_(nullptr),
         dict_quan_(nullptr),
-        dict_stop_(nullptr)
+        dict_stop_(nullptr),
+        dict_shared_(false)
   {
   }
 
@@ -73,6 +74,9 @@ private:
 
 private:
   int init_dict(const ObFTParserParam &param);
+
+  // build the dicts inside this parser, the dicts are destroyed with the parser
+  int init_owned_dict(const ObFTParserParam &param);
 
   int init_single_dict(ObFTDictDesc desc, ObFTCacheRangeContainer &container);
 
@@ -106,6 +110,8 @@ private:
   ObIFTDict *dict_main_;
   ObIFTDict *dict_quan_;
   ObIFTDict *dict_stop_;
+  // the dicts are shared by the whole server, should not be destroyed by this parser
+  bool dict_shared_;
 
   DISABLE_COPY_ASSIGN(ObIKFTParser);
 };
