@@ -1151,6 +1151,14 @@ public:
   static int serialize_json_double(double value, ObJsonBuffer &result);
   static int serialize_json_string(ObJBVerType vertype, const ObString &value, ObJsonBuffer &result);
 
+  // Serialize a flat array of strings directly into a json bin document, without
+  // building the json tree and the wrapping json bin object before.
+  // The produced bytes are the same as serializing an ObJsonArray of the strings.
+  static int serialize_json_string_array_doc(ObIAllocator *allocator,
+                                             const ObString *items,
+                                             const uint64_t count,
+                                             ObString &result);
+
 private:
   ObIAllocator *allocator_;
   ObJsonBinCtx bin_ctx_;

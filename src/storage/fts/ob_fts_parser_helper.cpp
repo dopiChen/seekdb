@@ -21,6 +21,7 @@
 #include "storage/fts/ob_fts_parser_helper.h"
 
 #include "common/json_type/ob_json_tree.h"
+#include "common/json_type/ob_json_bin.h"
 #include "share/ob_force_print_log.h"
 #include "storage/fts/dict/ob_ft_dict_hub.h"
 #include "storage/fts/ob_beng_ft_parser.h"
@@ -635,6 +636,40 @@ int ObFTParseHelper::make_token_array_json(
     json_root = token_array;
   } else {
     OB_DELETEx(ObJsonArray, allocator_, token_array);
+  }
+  return ret;
+}
+
+int ObFTParseHelper::make_token_array_bin(const ObFTWordMap &words, ObString &bin)
+{
+  int ret = OB_SUCCESS;
+  const int64_t word_cnt = words.size();
+  ObString *items = nullptr;
+  if (OB_UNLIKELY(word_cnt < 0)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (0 == word_cnt) {
+    if (OB_FAIL(common::ObJsonBinSerializer::serialize_json_string_array_doc(allocator_, nullptr, 0, bin))) {
+      LOG_WARN("fail to serialize the empty token array", K(ret));
+    }
+  } else if (OB_ISNULL(items = static_cast<ObString *>(allocator_->alloc(sizeof(ObString) * word_cnt)))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+    LOG_WARN("fail to alloc the token list", K(ret), K(word_cnt));
+  } else {
+    // keep the iterate order of the word map, it is the order of the json array
+    int64_t idx = 0;
+    for (ObFTWordMap::const_iterator it = words.begin(); OB_SUCC(ret) && it != words.end(); ++it) {
+      if (OB_UNLIKELY(idx >= word_cnt)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected word map size changed while iterating", K(ret), K(idx), K(word_cnt));
+      } else {
+        items[idx++] = it->first.get_word().get_string();
+      }
+    }
+    if (OB_FAIL(ret)) {
+    } else if (OB_FAIL(common::ObJsonBinSerializer::serialize_json_string_array_doc(
+        allocator_, items, static_cast<uint64_t>(idx), bin))) {
+      LOG_WARN("fail to serialize the token array", K(ret), K(idx));
+    }
   }
   return ret;
 }
