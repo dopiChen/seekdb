@@ -12804,6 +12804,139 @@ bool ObTransformUtils::is_full_group_by(ObSelectStmt& stmt, ObSQLMode mode)
   return !stmt.has_order_by() && is_only_full_group_by_on(mode);
 }
 
+int ObTransformUtils::check_need_calc_match_score(ObExecContext *exec_ctx,
+                                                  const ObDMLStmt *stmt,
+                                                  ObMatchFunRawExpr *match_expr,
+                                                  bool &need_calc,
+                                                  ObIArray<ObExprConstraint> &constraints)
+{
+  // The relevance score of a match expr is only needed when its numeric value is really
+  // consumed by the query (projection / ordering / grouping / join / comparison with a
+  // non zero value, ...). When the match expr is used as a whole filter predicate (or is
+  // compared with 0), only the "does this row match" answer matters, so the whole bm25
+  // statistic estimation and the per row score calculation can be skipped.
+  // Be conservative: any uncertainty keeps need_calc = true.
+  int ret = OB_SUCCESS;
+  need_calc = true;
+  if (OB_ISNULL(match_expr) || OB_ISNULL(stmt) || OB_ISNULL(exec_ctx)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("invalid argument", K(ret), KP(match_expr), KP(stmt), KP(exec_ctx));
+  } else if (stmt::T_SELECT != stmt->get_stmt_type()) {
+  } else if (NATURAL_LANGUAGE_MODE != match_expr->get_mode_flag()) {
+  } else if (match_expr->has_flag(CNT_SUB_QUERY)) {
+  } else {
+    ObSEArray<ObRawExpr *, 8> relation_exprs;
+    const ObIArray<ObRawExpr *> &condition_exprs = stmt->get_condition_exprs();
+    bool only_used_as_filter = true;
+    if (OB_FAIL(stmt->get_relation_exprs(relation_exprs))) {
+      LOG_WARN("failed to get relation exprs", K(ret));
+    }
+    for (int64_t i = 0; OB_SUCC(ret) && only_used_as_filter && i < relation_exprs.count(); ++i) {
+      ObRawExpr *relation_expr = relation_exprs.at(i);
+      bool used_as_filter = false;
+      if (OB_ISNULL(relation_expr)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected null relation expr", K(ret));
+      } else if (!relation_expr->has_flag(CNT_MATCH_EXPR)) {
+        // this relation expr has nothing to do with the match expr
+      } else if (!ObOptimizerUtil::find_item(condition_exprs, relation_expr)) {
+        // the score is consumed by the select list / order by / group by / having / join ...
+        only_used_as_filter = false;
+      } else if (OB_FAIL(SMART_CALL(inner_check_match_expr_used_as_filter(exec_ctx,
+                                                                          relation_expr,
+                                                                          match_expr,
+                                                                          used_as_filter,
+                                                                          constraints)))) {
+        LOG_WARN("failed to check match expr used as filter", K(ret));
+      } else if (!used_as_filter) {
+        only_used_as_filter = false;
+      }
+    }
+    if (OB_SUCC(ret) && only_used_as_filter) {
+      need_calc = false;
+    }
+  }
+  return ret;
+}
+
+// check whether the whole predicate @expr only depends on the presence(picture) semantics
+// of @match_expr, i.e. the numeric value of the match score is never consumed.
+int ObTransformUtils::inner_check_match_expr_used_as_filter(ObExecContext *exec_ctx,
+                                                            ObRawExpr *expr,
+                                                            ObRawExpr *match_expr,
+                                                            bool &used_as_filter,
+                                                            ObIArray<ObExprConstraint> &constraints)
+{
+  int ret = OB_SUCCESS;
+  used_as_filter = false;
+  if (OB_ISNULL(expr) || OB_ISNULL(match_expr) || OB_ISNULL(exec_ctx)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("invalid argument", K(ret), KP(expr), KP(match_expr), KP(exec_ctx));
+  } else if (!expr->has_flag(CNT_MATCH_EXPR)) {
+    // this branch does not involve the match expr at all
+    used_as_filter = true;
+  } else if (expr == match_expr) {
+    // the match expr is evaluated as a boolean predicate directly
+    used_as_filter = true;
+  } else if (expr->has_flag(CNT_SUB_QUERY)) {
+    // can not decide how the score is used inside a sub query
+  } else if (T_OP_AND == expr->get_expr_type() || T_OP_OR == expr->get_expr_type()) {
+    // the score is never combined arithmetically inside AND/OR, only the sub predicates
+    // have to be checked. a null child means an unknown predicate, be conservative.
+    used_as_filter = expr->get_param_count() > 0;
+    for (int64_t i = 0; OB_SUCC(ret) && used_as_filter && i < expr->get_param_count(); ++i) {
+      ObRawExpr *child = expr->get_param_expr(i);
+      bool child_used_as_filter = false;
+      if (OB_ISNULL(child)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected null child expr", K(ret));
+      } else if (OB_FAIL(SMART_CALL(inner_check_match_expr_used_as_filter(exec_ctx,
+                                                                          child,
+                                                                          match_expr,
+                                                                          child_used_as_filter,
+                                                                          constraints)))) {
+        LOG_WARN("failed to check child expr", K(ret));
+      } else if (!child_used_as_filter) {
+        used_as_filter = false;
+      }
+    }
+  } else if (T_OP_BOOL == expr->get_expr_type()) {
+    used_as_filter = (1 == expr->get_param_count() && match_expr == expr->get_param_expr(0));
+  } else if (T_OP_GT == expr->get_expr_type() || T_OP_LT == expr->get_expr_type()
+             || T_OP_NE == expr->get_expr_type()) {
+    // `match(...) > 0`, `0 < match(...)` and `match(...) != 0` are all equivalent to the
+    // "the row matched" predicate, since a row emitted by the text retrieval scan always
+    // gets a positive relevance score.
+    ObRawExpr *score_side = NULL;
+    ObRawExpr *other_side = NULL;
+    bool is_param_zero = false;
+    if (2 != expr->get_param_count() || OB_ISNULL(expr->get_param_expr(0))
+        || OB_ISNULL(expr->get_param_expr(1))) {
+      ret = OB_INVALID_ARGUMENT;
+      LOG_WARN("invalid param count for comparison expr", K(ret), K(expr->get_expr_type()));
+    } else if (FALSE_IT(score_side = (T_OP_GT == expr->get_expr_type()
+                                      ? expr->get_param_expr(0) : expr->get_param_expr(1)))) {
+    } else if (FALSE_IT(other_side = (T_OP_GT == expr->get_expr_type()
+                                      ? expr->get_param_expr(1) : expr->get_param_expr(0)))) {
+    } else if (T_OP_NE == expr->get_expr_type()
+               && (match_expr == expr->get_param_expr(0) || match_expr == expr->get_param_expr(1))) {
+      score_side = match_expr;
+      other_side = (match_expr == expr->get_param_expr(0)
+                    ? expr->get_param_expr(1) : expr->get_param_expr(0));
+    }
+    if (OB_FAIL(ret)) {
+      // do nothing
+    } else if (score_side != match_expr) {
+      // the match score is not the compared side, keep the original behavior
+    } else if (OB_FAIL(check_expr_eq_zero(exec_ctx, other_side, is_param_zero, constraints))) {
+      LOG_WARN("failed to check expr eq zero", K(ret));
+    } else if (is_param_zero) {
+      used_as_filter = true;
+    }
+  }
+  return ret;
+}
+
 int ObTransformUtils::inner_check_need_calc_match_score(ObExecContext *exec_ctx,
                                                         ObRawExpr* expr, 
                                                         ObRawExpr* match_expr, 

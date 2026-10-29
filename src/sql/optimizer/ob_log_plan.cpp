@@ -12251,7 +12251,6 @@ int ObLogPlan::prepare_text_retrieval_info(const uint64_t ref_table_id,
     }
   }
   if (OB_SUCC(ret)) {
-    /*
     if (OB_FAIL(ObTransformUtils::check_need_calc_match_score(get_optimizer_context().get_exec_ctx(),
                                                               get_stmt(),
                                                               match_against,
@@ -12262,7 +12261,6 @@ int ObLogPlan::prepare_text_retrieval_info(const uint64_t ref_table_id,
                OB_FAIL(append_array_no_dup(get_optimizer_context().get_query_ctx()->all_expr_constraints_, constraints))) {
       LOG_WARN("failed to append array no dup", K(ret));
     }
-    */
     tr_info.match_expr_ = match_against;
     tr_info.inv_idx_tid_ = inv_idx_tid;
     tr_info.fwd_idx_tid_ = fwd_idx_tid;
@@ -12745,6 +12743,8 @@ int ObLogPlan::try_push_topn_into_text_retrieval_scan(ObLogicalOperator *&top,
     pushed_limit_expr = need_further_sort ? topn_expr : limit_expr;
     pushed_offset_expr = need_further_sort ? NULL : offset_expr;
     ObSEArray<OrderItem, 1> tmp_sort_keys;
+    // the pushed down top-k sorts by the match score, the accurate relevance is required
+    table_scan->get_text_retrieval_info().need_calc_relevance_ = true;
     table_scan->get_text_retrieval_info().topk_limit_expr_ = pushed_limit_expr;
     table_scan->get_text_retrieval_info().topk_offset_expr_ = pushed_offset_expr;
     table_scan->get_text_retrieval_info().sort_key_.expr_ = sort_keys.at(0).expr_;
