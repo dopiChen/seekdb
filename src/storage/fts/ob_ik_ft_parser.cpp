@@ -168,6 +168,13 @@ int ObFTSharedIkDicts::get_dict(ObFTDictHub *hub, const ObFTDictType type, ObIFT
   if (OB_ISNULL(hub) || OB_UNLIKELY(idx < 0 || idx >= DICT_COUNT)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", K(ret), KP(hub), K(idx));
+  } else if (OB_LIKELY(ATOMIC_LOAD(&inited_))
+             && OB_NOT_NULL(dict = ATOMIC_LOAD(&dicts_[idx]))) {
+    // Fast path: the shared dictionaries are immutable once they have been
+    // published by build_all(), and publishing happened under lock_ which
+    // gives the release semantics this acquire load pairs with. Taking the
+    // mutex on every segment() call made the ik tokenizer pay a lock for
+    // data that it never writes.
   } else {
     lib::ObMutexGuard guard(lock_);
     if (!inited_ && OB_FAIL(build_all(hub))) {
