@@ -705,9 +705,6 @@ private:
   int fetch_next_fts_index_rows();
   int fill_generated_fts_cols(blocksstable::ObDatumRow *row);
   int get_output_fts_col_expr_by_type(const ObExprOperatorType &type, ObExpr *&expr);
-  // The generated fts columns are looked up by expr type once per row. As MY_SPEC.output_ is
-  // immutable during the life cycle of the operator, resolve the pointers once and reuse them.
-  int resolve_fts_col_exprs();
   bool is_resume_point_saved();
 protected:
   DASOpResultIter scan_result_;
@@ -738,10 +735,6 @@ protected:
   bool in_rescan_;
   ObDomainIndexCache domain_index_;
   ObFTIndexRowCache fts_index_;
-  ObExpr *fts_col_exprs_[share::ObFtsIndexBuilderUtil::OB_FTS_INDEX_OR_DOC_WORD_TABLE_COL_CNT];
-  ObExpr *fts_doc_id_expr_;
-  ObExpr *fts_word_segment_expr_;
-  bool fts_col_exprs_ready_;
 
   // output_ is used to output data, TSC operator directly invokes output_::get_next_row(s),
   // it points to fold_iter_ in group rescan and iter_tree_ in normal scan.
