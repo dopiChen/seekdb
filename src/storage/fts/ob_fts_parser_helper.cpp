@@ -30,11 +30,132 @@
 #include "data_plane/fts/ob_fts_parser_property.h"
 #include "storage/fts/ob_fts_stop_word.h"
 #include "storage/fts/ob_whitespace_ft_parser.h"
+#include "lib/lock/ob_mutex.h"
 
 namespace oceanbase
 {
 namespace storage
 {
+
+namespace
+{
+// The parser properties of a fulltext index, of a TOKENIZE() call and of the search text of
+// a MATCH() predicate are reform from a json string on every ObFTParseHelper::init, which
+// means once per document while an index is built and once per query while the search text
+// is tokenized. The reform builds a complete json tree and then walks it to fill one
+// ObFTParserProperty, while for a fixed (parser name, parser properties) pair the result
+// never changes, so keep the already reform values in a small table and let the hot path
+// copy one plain old struct instead of parsing json again.
+//
+// An entry is written into a free slot first and published afterwards, entries are never
+// modified or evicted once published, therefore readers never need a lock. When every slot
+// is taken or when a key does not fit into the fixed size buffer the caller reforms the
+// properties exactly as before, the table simply stops growing.
+class ObFTParsedPropCache
+{
+public:
+  static const int64_t SLOT_COUNT = 8;
+  static const int64_t MAX_KEY_LEN = 512;
+
+  static ObFTParsedPropCache &instance()
+  {
+    static ObFTParsedPropCache cache;
+    return cache;
+  }
+
+  bool get(const common::ObString &parser_name,
+           const common::ObString &properties,
+           ObFTParserProperty &property)
+  {
+    bool found = false;
+    char key[MAX_KEY_LEN];
+    int64_t key_len = 0;
+    if (make_key(parser_name, properties, key, key_len)) {
+      for (int64_t i = 0; !found && i < SLOT_COUNT; ++i) {
+        Slot &slot = slots_[i];
+        if (Slot::PUBLISHED == ATOMIC_LOAD(&slot.published_)) {
+          if (slot.key_len_ == key_len && 0 == MEMCMP(slot.key_, key, key_len)) {
+            property = slot.value_;
+            found = true;
+          }
+        }
+      }
+    }
+    return found;
+  }
+
+  void insert(const common::ObString &parser_name,
+              const common::ObString &properties,
+              const ObFTParserProperty &property)
+  {
+    char key[MAX_KEY_LEN];
+    int64_t key_len = 0;
+    if (make_key(parser_name, properties, key, key_len)) {
+      lib::ObMutexGuard guard(lock_);
+      Slot *target = nullptr;
+      bool duplicated = false;
+      for (int64_t i = 0; i < SLOT_COUNT; ++i) {
+        if (Slot::PUBLISHED == ATOMIC_LOAD(&slots_[i].published_)) {
+          duplicated = duplicated
+              || (slots_[i].key_len_ == key_len && 0 == MEMCMP(slots_[i].key_, key, key_len));
+        } else if (nullptr == target) {
+          target = &slots_[i];
+        }
+      }
+      if (nullptr != target && !duplicated) {
+        MEMCPY(target->key_, key, key_len);
+        target->key_len_ = key_len;
+        target->value_ = property;
+        // publish last, the key and the value must be visible before the entry is seen
+        ATOMIC_STORE(&target->published_, Slot::PUBLISHED);
+      }
+    }
+  }
+
+private:
+  struct Slot
+  {
+    static const int32_t EMPTY = 0;
+    static const int32_t PUBLISHED = 1;
+    Slot() : published_(EMPTY), key_len_(0), key_(), value_() {}
+    int32_t published_;
+    int64_t key_len_;
+    char key_[MAX_KEY_LEN];
+    ObFTParserProperty value_;
+  };
+
+  ObFTParsedPropCache() : lock_(), slots_() {}
+  ~ObFTParsedPropCache() {}
+
+  static bool make_key(const common::ObString &parser_name,
+                       const common::ObString &properties,
+                       char *key,
+                       int64_t &key_len)
+  {
+    bool valid = false;
+    const int64_t name_len = parser_name.length();
+    const int64_t props_len = properties.length();
+    const int64_t total = name_len + 1 + props_len;
+    if (name_len > 0 && total <= MAX_KEY_LEN) {
+      MEMCPY(key, parser_name.ptr(), name_len);
+      key[name_len] = '\0';
+      if (props_len > 0) {
+        MEMCPY(key + name_len + 1, properties.ptr(), props_len);
+      }
+      key_len = total;
+      valid = true;
+    }
+    return valid;
+  }
+
+  lib::ObMutex lock_;
+  Slot slots_[SLOT_COUNT];
+
+private:
+  DISALLOW_COPY_AND_ASSIGN(ObFTParsedPropCache);
+};
+
+} // end of anonymous namespace
 
 const char *ObFTParser::NAME_STR[ObFTParser::ParserType::FTP_MAX] = {
 #define FT_PARSER_TYPE(ftp_type, parser_name) #parser_name,
@@ -335,7 +456,14 @@ int ObFTParseHelper::init(
   } else if (OB_ISNULL(allocator) || OB_UNLIKELY(parser_name.empty())) {
     ret = OB_INVALID_ARGUMENT;
   } else if (OB_FAIL(parser_name_.parse_from_str(parser_name.ptr(), parser_name.length()))) {
-  } else if (OB_FAIL(parser_property_.parse_for_parser_helper(parser_name_, parser_properties))) {
+  } else if (!ObFTParsedPropCache::instance().get(parser_name, parser_properties, parser_property_)) {
+    // the properties of this parser were not reform yet, do it and remember the result
+    if (OB_FAIL(parser_property_.parse_for_parser_helper(parser_name_, parser_properties))) {
+    } else {
+      ObFTParsedPropCache::instance().insert(parser_name, parser_properties, parser_property_);
+    }
+  }
+  if (OB_FAIL(ret)) {
   } else if (OB_FAIL(parser_name_.get_desc(parser_desc_))) {
   } else if (OB_ISNULL(parser_desc_)) {
     ret = OB_ERR_UNEXPECTED;
@@ -410,7 +538,13 @@ int ObFTParseHelper::check_is_the_same(
     if (OB_UNLIKELY(parser_name_str.empty())) {
       ret = OB_INVALID_ARGUMENT;
     } else if (OB_FAIL(parser_name.parse_from_str(parser_name_str.ptr(), parser_name_str.length()))) {
-    } else if (OB_FAIL(parser_property.parse_for_parser_helper(parser_name, parser_properties))) {
+    } else if (!ObFTParsedPropCache::instance().get(parser_name_str, parser_properties, parser_property)) {
+      if (OB_FAIL(parser_property.parse_for_parser_helper(parser_name, parser_properties))) {
+      } else {
+        ObFTParsedPropCache::instance().insert(parser_name_str, parser_properties, parser_property);
+      }
+    }
+    if (OB_FAIL(ret)) {
     } else if (parser_name == parser_name_ && parser_property.is_equal(parser_property_)) {
       is_same = true;
     }
