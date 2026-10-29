@@ -23,6 +23,7 @@
 #include "lib/ob_errno.h"
 #include "lib/oblog/ob_log_module.h"
 #include "lib/utility/ob_macro_utils.h"
+#include "lib/utility/ob_sort.h"
 #include "lib/utility/utility.h"
 #include "share/rc/ob_server_runtime.h"
 #include "storage/fts/ik/ob_ik_processor.h"
@@ -113,6 +114,7 @@ int ObIKArbitrator::output_result(TokenizeContext &ctx)
 
   int64_t char_len = 0;
   ObIKTokenChain *chain = nullptr;
+  sort_chains();
   for (int64_t current = 0; OB_SUCC(ret) && current < ctx.fulltext_len();) {
     ObFTCharUtil::CharType type;
     // maybe not so good to keep single, check it later
@@ -126,7 +128,7 @@ int ObIKArbitrator::output_result(TokenizeContext &ctx)
                                                          type))) {
     } else if (ObFTCharUtil::CharType::USELESS == type) {
       current += char_len; // skip useless char
-    } else if (OB_FAIL(chains_.get_refactored(current, chain)) && OB_HASH_NOT_EXIST != ret) {
+    } else if (OB_FAIL(find_chain(current, chain)) && OB_HASH_NOT_EXIST != ret) {
     } else if (OB_HASH_NOT_EXIST == ret) {
       ret = OB_SUCCESS;
       if (!keep_single()) {
@@ -301,15 +303,16 @@ int ObIKArbitrator::remove_conflict(const ObIKToken &token, ObIKTokenChain *opti
 int ObIKArbitrator::prepare(TokenizeContext &ctx)
 {
   int ret = OB_SUCCESS;
-
-  int cal_bucket_num = MAX(ctx.fulltext_len() / 100, 10);
-  cal_bucket_num = MIN(cal_bucket_num, 100);
-  if (OB_FAIL(chains_.create(cal_bucket_num, ObMemAttr("IK ARBITRATE")))) {
-  }
+  // chains of one document are few and are walked in offset order, a flat array is
+  // enough, so there is nothing to allocate here.
+  chains_.reset();
+  chains_sorted_ = true;
   return ret;
 }
 
-ObIKArbitrator::ObIKArbitrator() : alloc_(lib::ObMemAttr("IK Arbitrator")) {}
+ObIKArbitrator::ObIKArbitrator()
+  : alloc_(lib::ObMemAttr("IK Arbitrator")), chains_(), chains_sorted_(true)
+{}
 
 int ObIKArbitrator::add_chain(ObIKTokenChain *chain)
 {
@@ -318,14 +321,62 @@ int ObIKArbitrator::add_chain(ObIKTokenChain *chain)
     ret = OB_INVALID_ARGUMENT;
   } else if (chain->list().is_empty()) {
     // no need to add empty chain
-  } else if (OB_FAIL(chains_.set_refactored(chain->min_offset(), chain))) {
+  } else {
+    const int64_t offset = chain->min_offset();
+    const int64_t last_offset = chains_.empty() ? INT64_MIN : chains_.at(chains_.count() - 1).offset_;
+    if (last_offset == offset) {
+      // keep the error code of the hash map set_refactored() it replaces
+      ret = OB_HASH_EXIST;
+    } else {
+      if (last_offset > offset) {
+        // added out of order, output_result() will sort the array before searching it
+        chains_sorted_ = false;
+      }
+      if (OB_FAIL(chains_.push_back(ChainSlot(offset, chain)))) {
+        LOG_WARN("failed to push back chain", K(ret), K(offset));
+      }
+    }
+  }
+  return ret;
+}
+
+void ObIKArbitrator::sort_chains()
+{
+  if (!chains_sorted_ && chains_.count() > 1) {
+    ChainSlot *slots = &chains_[0];
+    lib::ob_sort(slots, slots + chains_.count(), ChainSlot::compare);
+    chains_sorted_ = true;
+  }
+}
+
+// same result as the hash map get_refactored() it replaces: OB_SUCCESS when the chain
+// of @offset is found, OB_HASH_NOT_EXIST otherwise (@chain left untouched).
+int ObIKArbitrator::find_chain(const int64_t offset, ObIKTokenChain *&chain) const
+{
+  int ret = OB_SUCCESS;
+  int64_t left = 0;
+  int64_t right = chains_.count() - 1;
+  while (left <= right) {
+    const int64_t mid = left + ((right - left) >> 1);
+    const int64_t mid_offset = chains_.at(mid).offset_;
+    if (mid_offset == offset) {
+      chain = chains_.at(mid).chain_;
+      break;
+    } else if (mid_offset < offset) {
+      left = mid + 1;
+    } else {
+      right = mid - 1;
+    }
+  }
+  if (left > right) {
+    ret = OB_HASH_NOT_EXIST;
   }
   return ret;
 }
 
 ObIKArbitrator::~ObIKArbitrator()
 {
-  chains_.destroy();
+  chains_.reset();
   alloc_.reset();
 }
 } // namespace storage

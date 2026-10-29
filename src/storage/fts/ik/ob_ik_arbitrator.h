@@ -18,7 +18,7 @@
 #define _OCEANBASE_STORAGE_FTS_IK_OB_IK_ARBITRATOR_H_
 
 #include "lib/allocator/page_arena.h"
-#include "lib/hash/ob_hashmap.h"
+#include "lib/container/ob_se_array.h"
 #include "lib/utility/ob_macro_utils.h"
 #include "storage/fts/ik/ob_ik_token.h"
 
@@ -43,6 +43,13 @@ private:
 
   int add_chain(ObIKTokenChain *chain);
 
+  // lookup of a chain by its min offset, same result (and same error code) as the
+  // hash map lookup it replaces, but without a hash bucket array per document.
+  int find_chain(const int64_t offset, ObIKTokenChain *&chain) const;
+
+  void sort_chains();
+
+
   int optimize(TokenizeContext &ctx,
                ObIKTokenChain *option,
                ObFTSortList::CellIter iter,
@@ -60,8 +67,24 @@ private:
   bool keep_single() const { return true; }
 
 private:
+  // a chain slot: the min offset of the chain and the chain itself
+  struct ChainSlot
+  {
+    ChainSlot() : offset_(0), chain_(nullptr) {}
+    ChainSlot(const int64_t offset, ObIKTokenChain *chain) : offset_(offset), chain_(chain) {}
+    int64_t offset_;
+    ObIKTokenChain *chain_;
+    static int compare(const ChainSlot &lhs, const ChainSlot &rhs)
+    {
+      return lhs.offset_ < rhs.offset_;
+    }
+  };
+
   ObArenaAllocator alloc_;
-  hash::ObHashMap<int64_t, ObIKTokenChain *> chains_;
+  // chains are looked up by their min offset, they are added in increasing offset
+  // order, so a sorted array plus a binary search replaces the hash map
+  common::ObSEArray<ChainSlot, 16> chains_;
+  bool chains_sorted_;
 
 private:
   DISALLOW_COPY_AND_ASSIGN(ObIKArbitrator);
