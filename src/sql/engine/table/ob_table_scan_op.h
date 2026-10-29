@@ -735,6 +735,8 @@ protected:
   bool in_rescan_;
   ObDomainIndexCache domain_index_;
   ObFTIndexRowCache fts_index_;
+  // reused buffer for reading fulltext column values while building the index
+  common::ObArenaAllocator lob_buffer_alloc_;
 
   // output_ is used to output data, TSC operator directly invokes output_::get_next_row(s),
   // it points to fold_iter_ in group rescan and iter_tree_ in normal scan.

@@ -111,6 +111,55 @@ int ObGenDicLoader::init()
   return ret;
 }
 
+namespace {
+// The dictionary loader of one (parser, charset) pair never changes once it is
+// created, and the global map keeps it alive for the whole process lifetime.
+// Tokenizing a single document asks for the very same loader once per row, so
+// cache the last hit on the thread to skip the key build, the hash lookup and
+// the exclusive lock of the global map.
+struct ObDicLoaderTLCache
+{
+  ObDicLoaderTLCache() : name_len_(0), charset_(CHARSET_INVALID), loader_(nullptr)
+  {
+    MEMSET(name_, '\0', OB_FT_PARSER_NAME_LENGTH);
+  }
+  char name_[OB_FT_PARSER_NAME_LENGTH];
+  int32_t name_len_;
+  ObCharsetType charset_;
+  ObDicLoader *loader_;
+};
+
+thread_local ObDicLoaderTLCache TL_DIC_LOADER_CACHE;
+
+OB_INLINE ObDicLoader *try_get_cached_dic_loader(const ObString &parser_name,
+                                                 const ObCharsetType charset)
+{
+  ObDicLoader *loader = nullptr;
+  const ObDicLoaderTLCache &cache = TL_DIC_LOADER_CACHE;
+  if (nullptr != cache.loader_
+      && cache.charset_ == charset
+      && cache.name_len_ == parser_name.length()
+      && 0 == MEMCMP(cache.name_, parser_name.ptr(), parser_name.length())) {
+    loader = cache.loader_;
+  }
+  return loader;
+}
+
+OB_INLINE void save_cached_dic_loader(const ObString &parser_name,
+                                      const ObCharsetType charset,
+                                      ObDicLoader *loader)
+{
+  if (nullptr != loader && parser_name.length() < OB_FT_PARSER_NAME_LENGTH) {
+    ObDicLoaderTLCache &cache = TL_DIC_LOADER_CACHE;
+    MEMSET(cache.name_, '\0', OB_FT_PARSER_NAME_LENGTH);
+    MEMCPY(cache.name_, parser_name.ptr(), parser_name.length());
+    cache.name_len_ = static_cast<int32_t>(parser_name.length());
+    cache.charset_ = charset;
+    cache.loader_ = loader;
+  }
+}
+} // namespace
+
 int ObGenDicLoader::get_dic_loader(const ObString &parser_name, 
                                    const ObCharsetType charset, 
                                    ObDicLoaderHandle &loader_handle)
@@ -123,6 +172,9 @@ int ObGenDicLoader::get_dic_loader(const ObString &parser_name,
   } else if (parser_name.empty()
              || charset == CHARSET_INVALID) {
     ret = OB_INVALID_ARGUMENT;
+  } else if (nullptr != (dic_loader = try_get_cached_dic_loader(parser_name, charset))) {
+    if (OB_FAIL(loader_handle.set_loader(dic_loader))) {
+    }
   } else if (OB_FAIL(dic_loader_key.init(parser_name, charset))) {
   } else {
     TCWLockGuard guard(lock_);
@@ -139,6 +191,9 @@ int ObGenDicLoader::get_dic_loader(const ObString &parser_name,
         ret = OB_ERR_UNEXPECTED;
       }
     } else if (OB_FAIL(loader_handle.set_loader(dic_loader))) {
+    }
+    if (OB_SUCC(ret)) {
+      save_cached_dic_loader(parser_name, charset, dic_loader);
     }
   }
   return ret;

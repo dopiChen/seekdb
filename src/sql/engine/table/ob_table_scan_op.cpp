@@ -3648,6 +3648,9 @@ int ObTableScanOp::fetch_next_fts_index_rows()
   int ret = OB_SUCCESS;
   bool has_segment_word = false;
   while (OB_SUCC(ret) && !has_segment_word) {
+    // the lob buffer of the fulltext column is reused across rows instead of
+    // allocating a fresh arena for every document of the index build
+    lob_buffer_alloc_.reuse();
     ObExpr *ft_expr = nullptr;
     ObExpr *doc_id_expr = nullptr;
     ObDatum *ft_datum = nullptr;
@@ -3666,9 +3669,8 @@ int ObTableScanOp::fetch_next_fts_index_rows()
       ret = OB_ERR_UNEXPECTED;
     } else {
       ObString ft = ft_datum->get_string();
-      ObArenaAllocator tmp_allocator(ObModIds::OB_LOB_ACCESS_BUFFER, OB_MALLOC_NORMAL_BLOCK_SIZE);
       if (OB_FAIL(ObTextStringHelper::read_real_string_data(get_exec_ctx(),
-                                                            tmp_allocator,
+                                                            lob_buffer_alloc_,
                                                             *ft_datum,
                                                             ft_expr->datum_meta_,
                                                             ft_expr->obj_meta_.has_lob_header(),
