@@ -202,6 +202,17 @@ public:
       const ObFTWordMap &words,
       common::ObIJsonBase *&json_root);
 
+  /**
+   * Make the json binary document of the token array directly, the same content as
+   * make_token_array_json() returns but without building the json tree before.
+   *
+   * @param[in] words, word lists after segment
+   * @param[out] bin, the json binary document
+   */
+  int make_token_array_bin(
+      const ObFTWordMap &words,
+      common::ObString &bin);
+
   void reset();
 
   TO_STRING_KV(KP_(allocator), K_(parser_name), KP_(parser_desc), K_(is_inited));

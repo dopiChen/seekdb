@@ -182,13 +182,19 @@ int ObExprTokenize::eval_tokenize(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &e
   common::ObArenaAllocator &temp_allocator = tmp_alloc_g.get_allocator();
 
   ObIJsonBase *json_result = nullptr;
+  ObString bin_result;
   TokenizeParam param;
 
   // check param num, which is checked in ObExprOperator::calc_result_typeN.
   if (OB_UNLIKELY(expr.arg_cnt_ < 1 || expr.arg_cnt_ > 3)) {
     ret = OB_INVALID_ARGUMENT;
   } else if (OB_FAIL(parse_param(expr, ctx, temp_allocator, param))) {
-  } else if (OB_FAIL(tokenize_fulltext(param, param.output_mode_, temp_allocator, json_result))) {
+  } else if (OB_FAIL(tokenize_fulltext(param, param.output_mode_, temp_allocator, json_result, bin_result))) {
+  } else if (OB_NOT_NULL(bin_result.ptr())) {
+    // the token array was serialized to the json binary format already
+    if (OB_FAIL(ObJsonExprHelper::pack_json_str_res(expr, ctx, expr_datum, bin_result))) {
+      LOG_WARN("fail to pack the tokenize result", K(ret));
+    }
   } else if (OB_FAIL(ObJsonExprHelper::pack_json_res(expr,
                                                      ctx,
                                                      temp_allocator,
@@ -202,15 +208,14 @@ int ObExprTokenize::eval_tokenize(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &e
 int ObExprTokenize::tokenize_fulltext(const TokenizeParam &param,
                                       TokenizeParam::OUTPUT_MODE mode,
                                       ObIAllocator &allocator,
-                                      ObIJsonBase *&result)
+                                      ObIJsonBase *&result,
+                                      ObString &bin_result)
 {
   int ret = OB_SUCCESS;
   storage::ObFTParseHelper tokenize_helper;
   const int64_t ft_word_bkt_cnt = MIN(MAX(param.fulltext_.length() / 2, 2), 997);
   int64_t doc_len = 0;
   storage::ObFTWordMap token_map;
-
-  ObArenaAllocator tmp_parse_alloc(ObMemAttr("Tmp buffer"));
 
   if (TokenizeParam::OUTPUT_MODE::DEFAULT != mode && TokenizeParam::OUTPUT_MODE::ALL != mode) {
     ret = OB_INVALID_ARGUMENT;
@@ -227,9 +232,14 @@ int ObExprTokenize::tokenize_fulltext(const TokenizeParam &param,
   } else {
     switch (param.output_mode_) {
     case TokenizeParam::OUTPUT_MODE::DEFAULT: {
-      if (OB_FAIL(tokenize_helper.make_token_array_json(token_map, result))) {
-      } else {
-        // pass
+      if (OB_FAIL(tokenize_helper.make_token_array_bin(token_map, bin_result))) {
+        // fall back to the json tree on any unexpected failure
+        LOG_WARN("fail to make the token array binary, retry with the json tree", K(ret));
+        ret = OB_SUCCESS;
+        bin_result.reset();
+        if (OB_FAIL(tokenize_helper.make_token_array_json(token_map, result))) {
+          LOG_WARN("fail to make the token array json", K(ret));
+        }
       }
       break;
     }
