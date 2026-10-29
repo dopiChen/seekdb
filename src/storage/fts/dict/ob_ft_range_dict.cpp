@@ -307,6 +307,8 @@ int ObFTRangeDict::init()
     ret = OB_INIT_TWICE;
   } else {
     if (OB_FAIL(build_dict_from_cache(*range_container_))) {
+    } else {
+      build_cp_index();
     }
     is_inited_ = true;
   }
@@ -378,10 +380,142 @@ int ObFTRangeDict::match_with_hit(const ObString &single_word,
   return last_hit.dict_->match_with_hit(single_word, last_hit, hit);
 }
 
-int ObFTRangeDict::find_first_char_range(const ObString &single_word, ObIFTDict *&dict) const
+bool ObFTRangeDict::decode_char_cp(const char *ptr, const int32_t len, uint32_t &cp)
+{
+  bool bool_ret = false;
+  if (OB_NOT_NULL(ptr) && len > 0 && len <= 4) {
+    const unsigned char *uc = reinterpret_cast<const unsigned char *>(ptr);
+    uint32_t code = 0;
+    int32_t need = 0;
+    uint32_t min = 0;
+    if (uc[0] < 0x80) {
+      code = uc[0];
+      need = 1;
+    } else if (uc[0] >= 0xC2 && uc[0] <= 0xDF) {
+      code = uc[0] & 0x1f;
+      need = 2;
+      min = 0x80;
+    } else if (uc[0] >= 0xE0 && uc[0] <= 0xEF) {
+      code = uc[0] & 0x0f;
+      need = 3;
+      min = 0x800;
+    } else if (uc[0] >= 0xF0 && uc[0] <= 0xF4) {
+      code = uc[0] & 0x07;
+      need = 4;
+      min = 0x10000;
+    }
+    bool valid = (need == len);
+    for (int32_t i = 1; valid && i < need; ++i) {
+      valid = (0x80 == (uc[i] & 0xc0));
+      code = (code << 6) | (uc[i] & 0x3f);
+    }
+    if (valid) {
+      valid = (code >= min) && (code <= 0x10ffff) && !(code >= 0xd800 && code <= 0xdfff);
+      // reject the surrogates encoded as four bytes (F0 90 80 80 .. F0 BF BF BF)
+      valid = valid && (code < 0xd800 || code > 0xdfff);
+    }
+    if (valid) {
+      cp = code;
+      bool_ret = true;
+    }
+  }
+  return bool_ret;
+}
+
+void ObFTRangeDict::build_cp_index()
+{
+  int ret = OB_SUCCESS;
+  const int64_t range_count = range_dicts_.size();
+  CpRange *cp_ranges = nullptr;
+  bool ready = range_count > 0;
+  if (ready) {
+    void *buf = range_alloc_.alloc(sizeof(CpRange) * range_count);
+    if (OB_ISNULL(buf)) {
+      ready = false;
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      STORAGE_FTS_LOG(WARN, "fail to alloc cp index", K(ret), K(range_count));
+    } else {
+      cp_ranges = reinterpret_cast<CpRange *>(buf);
+    }
+  }
+  for (int64_t i = 0; ready && i < range_count; ++i) {
+    const ObFTRange &range = range_dicts_.at(i);
+    const ObString start_word = range.start_.get_word();
+    const ObString end_word = range.end_.get_word();
+    cp_ranges[i].dict_ = range.dict_;
+    if (OB_ISNULL(range.dict_)) {
+      ready = false;
+    } else if (!decode_char_cp(start_word.ptr(), start_word.length(), cp_ranges[i].start_cp_)
+               || !decode_char_cp(end_word.ptr(), end_word.length(), cp_ranges[i].end_cp_)
+               || cp_ranges[i].start_cp_ > cp_ranges[i].end_cp_) {
+      ready = false;
+    } else if (i > 0 && cp_ranges[i - 1].end_cp_ >= cp_ranges[i].start_cp_) {
+      // overlapping or unordered ranges, keep the original scan
+      ready = false;
+    }
+  }
+  if (ready) {
+    // Self check: every range boundary character must be answered by the index exactly as
+    // the collation scan answers it, same dict or same miss.  Anything else keeps the scan.
+    for (int64_t i = 0; ready && i < range_count; ++i) {
+      for (int64_t b = 0; ready && b < 2; ++b) {
+        const ObString word = (0 == b) ? range_dicts_.at(i).start_.get_word()
+                                       : range_dicts_.at(i).end_.get_word();
+        ObIFTDict *fast_dict = nullptr;
+        ObIFTDict *scan_dict = nullptr;
+        const int fast_ret = lookup_first_char_range(word, cp_ranges, range_count, fast_dict);
+        const int scan_ret = lookup_first_char_range(word, nullptr, 0, scan_dict);
+        if (fast_ret != scan_ret || fast_dict != scan_dict) {
+          ready = false;
+        }
+      }
+    }
+  }
+  if (ready) {
+    cp_ranges_ = cp_ranges;
+    cp_range_count_ = range_count;
+  } else {
+    if (OB_NOT_NULL(cp_ranges)) {
+      range_alloc_.free(cp_ranges);
+    }
+    cp_ranges_ = nullptr;
+    cp_range_count_ = 0;
+    LOG_TRACE("range dict falls back to the linear scan", K(range_count), K(ret));
+  }
+}
+
+int ObFTRangeDict::lookup_first_char_range(const ObString &single_word,
+                                          const CpRange *cp_ranges,
+                                          const int64_t cp_range_count,
+                                          ObIFTDict *&dict) const
 {
   int ret = OB_SUCCESS;
   bool found = false;
+  if (cp_range_count > 0 && OB_NOT_NULL(cp_ranges)) {
+    uint32_t cp = 0;
+    // decode_char_cp only succeeds for exactly one well formed utf-8 character, which is
+    // the granularity the index is keyed on; a longer word goes through the scan below.
+    if (decode_char_cp(single_word.ptr(), single_word.length(), cp)) {
+      // the intervals are sorted and disjoint: find the first one whose end reaches cp
+      int64_t low = 0;
+      int64_t high = cp_range_count - 1;
+      while (low < high) {
+        const int64_t mid = low + ((high - low) >> 1);
+        if (cp_ranges[mid].end_cp_ < cp) {
+          low = mid + 1;
+        } else {
+          high = mid;
+        }
+      }
+      if (cp_ranges[low].start_cp_ <= cp && cp <= cp_ranges[low].end_cp_) {
+        dict = cp_ranges[low].dict_;
+        found = true;
+      } else {
+        // a hole between two ranges, no range covers the character, the scan would miss too
+        ret = OB_ENTRY_NOT_EXIST;
+      }
+    }
+  }
   for (int i = 0; OB_SUCC(ret) && !found && i < range_dicts_.size(); ++i) {
     if (ObCharset::strcmp(ObCollationType::CS_TYPE_UTF8MB4_BIN,
                           range_dicts_[i].start_.get_word(),
@@ -400,6 +534,11 @@ int ObFTRangeDict::find_first_char_range(const ObString &single_word, ObIFTDict 
     ret = OB_ENTRY_NOT_EXIST;
   }
   return ret;
+}
+
+int ObFTRangeDict::find_first_char_range(const ObString &single_word, ObIFTDict *&dict) const
+{
+  return lookup_first_char_range(single_word, cp_ranges_, cp_range_count_, dict);
 }
 
 int ObFTRangeDict::build_dict_from_cache(const ObFTCacheRangeContainer &range_container)

@@ -39,7 +39,8 @@ public:
                 ObFTCacheRangeContainer *range_container,
                 const ObFTDictDesc &desc)
       : is_inited_(false), desc_(desc), range_alloc_(lib::ObMemAttr("Range Dict")),
-        range_dicts_(&range_alloc_), range_container_(range_container)
+        range_dicts_(&range_alloc_), cp_ranges_(nullptr), cp_range_count_(0),
+        range_container_(range_container)
   {
   }
   ~ObFTRangeDict() override{};
@@ -93,6 +94,8 @@ private:
     for (int64_t i = 0; i < range_dicts_.size(); i++) {
       range_dicts_[i].dict_->~ObIFTDict(); // destroy dict
     }
+    cp_ranges_ = nullptr;
+    cp_range_count_ = 0;
     range_dicts_.reset();
     range_alloc_.reset();
   }
@@ -100,11 +103,42 @@ private:
   int find_first_char_range(const ObString &single_word, ObIFTDict *&dict) const;
 
 private:
+  // A range holds the first character of its first and of its last dictionary word, and
+  // the ranges are generated while iterating a sorted dictionary, so the intervals
+  // [start_char, end_char] are sorted and never overlap.  Looking a character up then
+  // only needs the code points of the boundaries: for well formed utf-8 the byte order
+  // used by ObCharset::strcmp(CS_TYPE_UTF8MB4_BIN, ...) is exactly the code point order.
+  // The index is validated against the collation while it is built; when anything is not
+  // as expected (ill formed boundary, unsorted or overlapping ranges, null dict) the
+  // index stays empty and the original linear strcmp scan answers the lookup.
+  struct CpRange
+  {
+    uint32_t start_cp_;
+    uint32_t end_cp_;
+    ObIFTDict *dict_;
+  };
+
+  // Answer a lookup with the given index; cp_range_count == 0 means "no index", the
+  // linear strcmp scan answers then.  Kept as a parameter so build_cp_index() can
+  // verify a candidate index against the scan before installing it.
+  int lookup_first_char_range(const ObString &single_word,
+                              const CpRange *cp_ranges,
+                              const int64_t cp_range_count,
+                              ObIFTDict *&dict) const;
+
+  // Build the code point index, best effort: on any surprise it leaves cp_ranges_ empty.
+  void build_cp_index();
+  // Decode exactly one well formed utf-8 character filling [ptr, ptr + len).
+  static bool decode_char_cp(const char *ptr, const int32_t len, uint32_t &cp);
+
+private:
   static constexpr int DEFAULT_KEY_PER_RANGE = 50000; // by estimated
   bool is_inited_;
   ObFTDictDesc desc_;
   ObArenaAllocator range_alloc_;
   ObVector<ObFTRange, ObArenaAllocator> range_dicts_;
+  CpRange *cp_ranges_; // read only lookup index over range_dicts_
+  int64_t cp_range_count_;
   ObFTCacheRangeContainer *range_container_; // only used to read cache
 
 private:
